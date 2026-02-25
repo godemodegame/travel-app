@@ -1,0 +1,32 @@
+# Node / JS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# React Native
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+ios/build/
+ios/Pods/
+
+# Metro
+.metro-health-check*
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# TypeScript
+*.tsbuildinfo
+
+# Env
+.env
+.env.*
+
+# Legacy Android scaffold from previous step
+.gradle/
+*/build/
