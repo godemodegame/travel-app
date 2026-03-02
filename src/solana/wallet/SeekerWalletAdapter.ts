@@ -10,7 +10,7 @@ export class SeekerWalletAdapter implements WalletProvider {
     uri: 'https://hokus.app',
     icon: 'favicon.ico'
   } as const;
-  private static readonly DEFAULT_CHAIN = 'solana:testnet';
+  private static readonly DEFAULT_CHAIN = 'solana:devnet';
   private session: WalletSession | null = null;
 
   async connect(): Promise<WalletSession> {

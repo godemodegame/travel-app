@@ -1,4 +1,5 @@
 export type HokusNftMetadata = {
+  mintAddress?: string;
   name: string;
   description: string;
   imageUri?: string;

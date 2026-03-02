@@ -8,6 +8,8 @@ type Props = {
   script: SoundscapeScript;
   title: string;
   autoPlaySignal?: number;
+  stopSignal?: number;
+  onPlaybackStateChange?: (isPlaying: boolean) => void;
   hideControls?: boolean;
 };
 
@@ -23,13 +25,13 @@ const ENGINE_HTML = `
 (function () {
   let ctx = null;
   let activeNodes = [];
-  let stopTimer = null;
+  let activeIntervals = [];
 
   function cleanup() {
-    if (stopTimer) {
-      clearTimeout(stopTimer);
-      stopTimer = null;
-    }
+    activeIntervals.forEach(intervalId => {
+      try { clearInterval(intervalId); } catch (_) {}
+    });
+    activeIntervals = [];
     activeNodes.forEach(node => {
       try { node.stop && node.stop(); } catch (_) {}
       try { node.disconnect && node.disconnect(); } catch (_) {}
@@ -66,58 +68,137 @@ const ENGINE_HTML = `
   }
 
   function scheduleRain(audioCtx, destination, loopLengthSec, gain, brightness) {
-    const src = audioCtx.createBufferSource();
-    src.buffer = createNoiseBuffer(audioCtx, loopLengthSec, brightness);
-    src.loop = true;
+    const baseSrc = audioCtx.createBufferSource();
+    baseSrc.buffer = createNoiseBuffer(audioCtx, loopLengthSec, brightness * 0.7 + 0.2);
+    baseSrc.loop = true;
 
-    const low = audioCtx.createBiquadFilter();
-    low.type = 'lowpass';
-    low.frequency.value = 1400 + brightness * 1400;
+    const splashSrc = audioCtx.createBufferSource();
+    splashSrc.buffer = createNoiseBuffer(audioCtx, loopLengthSec, 1.0);
+    splashSrc.loop = true;
 
-    const high = audioCtx.createBiquadFilter();
-    high.type = 'highpass';
-    high.frequency.value = 180;
+    const baseLow = audioCtx.createBiquadFilter();
+    baseLow.type = 'lowpass';
+    baseLow.frequency.value = 1200 + brightness * 1200;
 
-    const g = audioCtx.createGain();
-    g.gain.value = gain;
+    const baseHigh = audioCtx.createBiquadFilter();
+    baseHigh.type = 'highpass';
+    baseHigh.frequency.value = 140;
 
-    src.connect(low);
-    low.connect(high);
-    high.connect(g);
-    g.connect(destination);
+    const splashHigh = audioCtx.createBiquadFilter();
+    splashHigh.type = 'highpass';
+    splashHigh.frequency.value = 2200 + brightness * 1500;
 
-    src.start();
-    activeNodes.push(src, low, high, g);
+    const splashLow = audioCtx.createBiquadFilter();
+    splashLow.type = 'lowpass';
+    splashLow.frequency.value = 7200;
+
+    const baseGain = audioCtx.createGain();
+    baseGain.gain.value = gain * 0.85;
+
+    const splashGain = audioCtx.createGain();
+    splashGain.gain.value = gain * (0.16 + brightness * 0.16);
+
+    // Slow volume drift makes rain less static and more natural.
+    const rainLfo = audioCtx.createOscillator();
+    rainLfo.type = 'sine';
+    rainLfo.frequency.value = 0.035 + brightness * 0.055;
+    const rainLfoDepth = audioCtx.createGain();
+    rainLfoDepth.gain.value = gain * 0.06;
+
+    const rainMaster = audioCtx.createGain();
+    rainMaster.gain.value = 1;
+
+    baseSrc.connect(baseLow);
+    baseLow.connect(baseHigh);
+    baseHigh.connect(baseGain);
+    baseGain.connect(rainMaster);
+
+    splashSrc.connect(splashHigh);
+    splashHigh.connect(splashLow);
+    splashLow.connect(splashGain);
+    splashGain.connect(rainMaster);
+
+    rainLfo.connect(rainLfoDepth);
+    rainLfoDepth.connect(rainMaster.gain);
+
+    rainMaster.connect(destination);
+
+    baseSrc.start();
+    splashSrc.start();
+    rainLfo.start();
+    activeNodes.push(
+      baseSrc,
+      splashSrc,
+      baseLow,
+      baseHigh,
+      splashHigh,
+      splashLow,
+      baseGain,
+      splashGain,
+      rainLfo,
+      rainLfoDepth,
+      rainMaster
+    );
   }
 
   function scheduleThunder(audioCtx, destination, events, power) {
     const now = audioCtx.currentTime;
     events.forEach(event => {
       const at = now + event.atSecond;
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = createNoiseBuffer(audioCtx, Math.max(1.2, event.durationSec), 0.1);
-
-      const band = audioCtx.createBiquadFilter();
-      band.type = 'bandpass';
-      band.frequency.value = 70 + power * 90;
-      band.Q.value = 0.5;
-
       const panner = audioCtx.createStereoPanner();
       panner.pan.value = event.pan;
 
-      const g = audioCtx.createGain();
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(event.gain * (0.6 + power * 0.7), at + 0.03);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + event.durationSec);
+      // Bright crack transient.
+      const crackNoise = audioCtx.createBufferSource();
+      crackNoise.buffer = createNoiseBuffer(audioCtx, 0.6, 0.25);
+      const crackBand = audioCtx.createBiquadFilter();
+      crackBand.type = 'bandpass';
+      crackBand.frequency.value = 1100 + power * 1700;
+      crackBand.Q.value = 0.9;
+      const crackGain = audioCtx.createGain();
+      crackGain.gain.setValueAtTime(0.0001, at);
+      crackGain.gain.exponentialRampToValueAtTime(event.gain * (0.5 + power * 0.75), at + 0.02);
+      crackGain.gain.exponentialRampToValueAtTime(0.0001, at + 0.32);
 
-      noise.connect(band);
-      band.connect(panner);
-      panner.connect(g);
-      g.connect(destination);
+      // Low rumble tail.
+      const rumbleNoise = audioCtx.createBufferSource();
+      rumbleNoise.buffer = createNoiseBuffer(audioCtx, Math.max(2.4, event.durationSec + 1.2), 0.08);
+      const rumbleLow = audioCtx.createBiquadFilter();
+      rumbleLow.type = 'lowpass';
+      rumbleLow.frequency.value = 170 + power * 240;
+      const rumbleHigh = audioCtx.createBiquadFilter();
+      rumbleHigh.type = 'highpass';
+      rumbleHigh.frequency.value = 28;
+      const rumbleGain = audioCtx.createGain();
+      rumbleGain.gain.setValueAtTime(0.0001, at + 0.04);
+      rumbleGain.gain.exponentialRampToValueAtTime(event.gain * (0.65 + power * 0.8), at + 0.28);
+      rumbleGain.gain.exponentialRampToValueAtTime(0.0001, at + Math.max(2.2, event.durationSec + 0.9));
 
-      noise.start(at);
-      noise.stop(at + event.durationSec + 0.1);
-      activeNodes.push(noise, band, panner, g);
+      crackNoise.connect(crackBand);
+      crackBand.connect(panner);
+      panner.connect(crackGain);
+      crackGain.connect(destination);
+
+      rumbleNoise.connect(rumbleLow);
+      rumbleLow.connect(rumbleHigh);
+      rumbleHigh.connect(panner);
+      panner.connect(rumbleGain);
+      rumbleGain.connect(destination);
+
+      crackNoise.start(at);
+      crackNoise.stop(at + 0.55);
+      rumbleNoise.start(at + 0.03);
+      rumbleNoise.stop(at + Math.max(2.6, event.durationSec + 1.3));
+      activeNodes.push(
+        crackNoise,
+        crackBand,
+        crackGain,
+        rumbleNoise,
+        rumbleLow,
+        rumbleHigh,
+        rumbleGain,
+        panner
+      );
     });
   }
 
@@ -198,23 +279,30 @@ const ENGINE_HTML = `
       if (layer.type === 'rain') {
         scheduleRain(audioCtx, master, script.loopLengthSec, layer.gain, normalized.rainTexture);
       }
-      if (layer.type === 'thunder') {
-        scheduleThunder(audioCtx, master, layer.events, normalized.thunderPower);
-      }
-      if (layer.type === 'forest') {
-        scheduleForest(audioCtx, master, layer.events, normalized.forestDensity);
-      }
-      if (layer.type === 'wind') {
-        scheduleWind(audioCtx, master, layer.events, normalized.windDepth);
-      }
     });
 
-    stopTimer = setTimeout(() => {
-      cleanup();
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({type: 'finished'}));
+    const scheduleFxLoop = function () {
+      script.layers.forEach(layer => {
+        if (layer.type === 'thunder') {
+          scheduleThunder(audioCtx, master, layer.events, normalized.thunderPower);
+        }
+        if (layer.type === 'forest') {
+          scheduleForest(audioCtx, master, layer.events, normalized.forestDensity);
+        }
+        if (layer.type === 'wind') {
+          scheduleWind(audioCtx, master, layer.events, normalized.windDepth);
+        }
+      });
+    };
+
+    scheduleFxLoop();
+    const loopIntervalId = setInterval(function () {
+      if (!ctx || ctx.state === 'closed') {
+        return;
       }
-    }, script.loopLengthSec * 1000 + 200);
+      scheduleFxLoop();
+    }, script.loopLengthSec * 1000);
+    activeIntervals.push(loopIntervalId);
   }
 
   window.__hokusPlay = function (payload) {
@@ -247,6 +335,8 @@ export const SoundscapePlayer: React.FC<Props> = ({
   script,
   title,
   autoPlaySignal,
+  stopSignal,
+  onPlaybackStateChange,
   hideControls = false
 }) => {
   const webViewRef = useRef<WebView>(null);
@@ -283,6 +373,19 @@ export const SoundscapePlayer: React.FC<Props> = ({
     }
     play();
   }, [autoPlaySignal]);
+
+  useEffect(() => {
+    if (stopSignal === undefined) {
+      return;
+    }
+    stop();
+    setIsPlaying(false);
+    setStatus('Stopped');
+  }, [stopSignal]);
+
+  useEffect(() => {
+    onPlaybackStateChange?.(isPlaying);
+  }, [isPlaying, onPlaybackStateChange]);
 
   return (
     <View style={styles.container}>

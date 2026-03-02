@@ -42,7 +42,7 @@ export const MintScreen: React.FC = () => {
 
         <View style={styles.content}>
           <Text style={styles.heading}>Create New Hokus NFT</Text>
-          <Text style={styles.subheading}>{`Price ${mintPriceSol} SOL • testnet`}</Text>
+          <Text style={styles.subheading}>{`Price ${mintPriceSol} SOL • devnet`}</Text>
 
           <SectionCard
             title="Preview DNA"
@@ -55,7 +55,7 @@ export const MintScreen: React.FC = () => {
           />
 
           <Pressable onPress={handleMint} style={[styles.button, isMinting ? styles.buttonDisabled : null]}>
-            {isMinting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>Mint On-chain (Testnet)</Text>}
+            {isMinting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>Mint On-chain (Devnet)</Text>}
           </Pressable>
 
           {lastMinted ? (
