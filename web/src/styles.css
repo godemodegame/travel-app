@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light;
+  font-family: 'Trebuchet MS', 'Tahoma', sans-serif;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #4f87cb 0%, #26558f 100%);
+  min-height: 100vh;
+}
+
+button {
+  border: 1px solid #111;
+  background: #e9e9e9;
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+h1, h2, p {
+  margin: 0;
+}
+
+.onboarding-root,
+.app-root {
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.tabs button.active,
+.chip.active {
+  background: #0a246a;
+  color: #fff;
+}
+
+.panel {
+  border: 2px solid #000;
+  background: #c0c0c0;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.panel-title {
+  background: #0a246a;
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 6px 8px;
+  margin: -12px -12px 4px -12px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  background: #f4f4f4;
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+}
+
+.list-item {
+  border: 1px solid #6a6a6a;
+  background: #ebebeb;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
