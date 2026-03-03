@@ -24,6 +24,7 @@ const ENGINE_HTML = `
 <script>
 (function () {
   let ctx = null;
+  let masterNode = null;
   let activeNodes = [];
   let activeIntervals = [];
 
@@ -37,6 +38,12 @@ const ENGINE_HTML = `
       try { node.disconnect && node.disconnect(); } catch (_) {}
     });
     activeNodes = [];
+
+    if (masterNode) {
+      try { masterNode.gain && masterNode.gain.setValueAtTime(0, ctx ? ctx.currentTime : 0); } catch (_) {}
+      try { masterNode.disconnect && masterNode.disconnect(); } catch (_) {}
+      masterNode = null;
+    }
   }
 
   function ensureCtx() {
@@ -265,6 +272,7 @@ const ENGINE_HTML = `
     const master = audioCtx.createGain();
     master.gain.value = 0.85;
     master.connect(audioCtx.destination);
+    masterNode = master;
     activeNodes.push(master);
 
     const params = script.params || {};
@@ -321,6 +329,17 @@ const ENGINE_HTML = `
 
   window.__hokusStop = function () {
     cleanup();
+    if (ctx) {
+      try {
+        if (ctx.state === 'running') {
+          ctx.suspend();
+        }
+      } catch (_) {}
+      try {
+        ctx.close();
+      } catch (_) {}
+      ctx = null;
+    }
     if (window.ReactNativeWebView) {
       window.ReactNativeWebView.postMessage(JSON.stringify({type: 'stopped'}));
     }
@@ -344,6 +363,7 @@ export const SoundscapePlayer: React.FC<Props> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [status, setStatus] = useState<string>('Idle');
+  const [engineNonce, setEngineNonce] = useState(0);
 
   const payload = useMemo(() => {
     return JSON.stringify(script);
@@ -364,7 +384,13 @@ export const SoundscapePlayer: React.FC<Props> = ({
   };
 
   const stop = (): void => {
+    // Optimistically update UI and force-reset WebView engine to guarantee stop.
+    setIsPlaying(false);
+    setStatus('Stopped');
+    pendingAutoPlayRef.current = false;
     webViewRef.current?.injectJavaScript('window.__hokusStop(); true;');
+    setIsReady(false);
+    setEngineNonce(prev => prev + 1);
   };
 
   useEffect(() => {
@@ -395,16 +421,17 @@ export const SoundscapePlayer: React.FC<Props> = ({
 
       {!hideControls ? (
         <View style={styles.row}>
-          <Pressable style={styles.playButton} onPress={play}>
+          <Pressable style={styles.playButton} onPressIn={play}>
             <Text style={styles.buttonText}>Play</Text>
           </Pressable>
-          <Pressable style={styles.stopButton} onPress={stop}>
+          <Pressable style={styles.stopButton} onPressIn={stop}>
             <Text style={styles.buttonText}>Stop</Text>
           </Pressable>
         </View>
       ) : null}
 
       <WebView
+        key={`sound-engine-${engineNonce}`}
         ref={webViewRef}
         originWhitelist={['*']}
         source={{html: ENGINE_HTML}}
@@ -475,7 +502,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8
   },
   stopButton: {
-    backgroundColor: '#6A6A6A',
+    backgroundColor: '#C62828',
     borderWidth: 1,
     borderColor: '#000000',
     paddingHorizontal: 12,

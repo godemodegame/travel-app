@@ -4,6 +4,7 @@ const defaultConfig = getDefaultConfig(__dirname);
 
 module.exports = mergeConfig(defaultConfig, {
   resolver: {
-    sourceExts: [...defaultConfig.resolver.sourceExts]
+    sourceExts: [...defaultConfig.resolver.sourceExts],
+    assetExts: Array.from(new Set([...defaultConfig.resolver.assetExts, 'wav']))
   }
 });
