@@ -1,32 +1,41 @@
 # Node / JS
 node_modules/
+web/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+*.log
 
-# React Native
+# Build outputs / caches
+dist/
+web/dist/
+.gradle/
 android/.gradle/
 android/app/build/
 android/build/
-android/local.properties
 ios/build/
 ios/Pods/
+coverage/
+.eslintcache
 
-# Metro
+# React Native / Metro
 .metro-health-check*
+android/local.properties
+
+# Vercel
+.vercel/
+web/.vercel/
 
 # IDE / OS
 .DS_Store
 .idea/
 .vscode/
+.codex/
 
 # TypeScript
 *.tsbuildinfo
 
-# Env
+# Environment
 .env
 .env.*
-
-# Legacy Android scaffold from previous step
-.gradle/
-*/build/
