@@ -29,6 +29,10 @@
     "react-native-vector-icons": "^10.3.0",
     "react-native-webview": "^13.16.0"
   },
+  "overrides": {
+    "fast-xml-parser": "^4.5.4",
+    "minimatch": "^9.0.7"
+  },
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",

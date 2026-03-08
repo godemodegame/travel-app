@@ -26,8 +26,15 @@ import {
   createCreateMetadataAccountV3Instruction,
   createCreateMasterEditionV3Instruction
 } from '@metaplex-foundation/mpl-token-metadata';
+import {
+  createHokusGuardMintInstruction,
+  deriveHokusGuardConfigPda,
+  deriveHokusMintReceiptPda,
+  resolveHokusMintGuardConfig
+} from '@/solana/contract/hokusMintGuard';
 import {transact} from '@solana-mobile/mobile-wallet-adapter-protocol-web3js';
 import {Buffer} from 'buffer';
+import bs58 from 'bs58';
 
 const SOLANA_DEVNET_CHAIN = 'solana:devnet';
 const APP_IDENTITY = {
@@ -39,6 +46,13 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 const METADATA_ACCOUNT_SIZE = 679;
 const MASTER_EDITION_ACCOUNT_SIZE = 282;
 const TX_SAFETY_BUFFER_LAMPORTS = 25_000;
+const HOKUS_SYMBOL = 'HOKUS';
+const HOKUS_MAX_SUPPLY = 10_000;
+const SYMBOL_OFFSET = 1 + 32 + 32 + 4 + 32 + 4;
+const CONFIG_ACCOUNT_SIZE = 82;
+const RECEIPT_ACCOUNT_SIZE = 37;
+const CONFIG_MAX_SUPPLY_OFFSET = 66;
+const CONFIG_MINTED_SUPPLY_OFFSET = 70;
 
 const lamportsToSol = (lamports: number): number => {
   return lamports / LAMPORTS_PER_SOL;
@@ -88,7 +102,7 @@ const toMetadataName = (name: string): string => {
 };
 
 const toMetadataSymbol = (): string => {
-  return 'HOKUS';
+  return HOKUS_SYMBOL;
 };
 
 export class MetaplexHokusNftClient implements HokusNftClient {
@@ -96,7 +110,29 @@ export class MetaplexHokusNftClient implements HokusNftClient {
     private readonly connection: Connection = new Connection(clusterApiUrl('devnet'), 'confirmed')
   ) {}
 
+  getMaxSupply(): number {
+    return HOKUS_MAX_SUPPLY;
+  }
+
+  async getMintedSupply(): Promise<number> {
+    const guard = resolveHokusMintGuardConfig();
+    const configPda = deriveHokusGuardConfigPda(guard.programId);
+    const account = await this.connection.getAccountInfo(configPda, 'confirmed');
+    if (!account || !account.owner.equals(guard.programId) || account.data.length < CONFIG_ACCOUNT_SIZE) {
+      return 0;
+    }
+
+    return account.data.readUInt32LE(CONFIG_MINTED_SUPPLY_OFFSET);
+  }
+
   async mintSoundNft(metadata: HokusNftMetadata): Promise<MintedHokusNft> {
+    const guard = resolveHokusMintGuardConfig();
+    const guardConfigPda = deriveHokusGuardConfigPda(guard.programId);
+    const mintedSupply = await this.getMintedSupply();
+    if (mintedSupply >= HOKUS_MAX_SUPPLY) {
+      throw new Error(`Hokus supply cap reached (${HOKUS_MAX_SUPPLY}). Mint is closed.`);
+    }
+
     return transact(async wallet => {
       const authorization = await wallet.authorize({
         identity: APP_IDENTITY,
@@ -123,6 +159,7 @@ export class MetaplexHokusNftClient implements HokusNftClient {
 
       const metadataPda = findMetadataPda(mintPublicKey);
       const masterEditionPda = findMasterEditionPda(mintPublicKey);
+      const receiptPda = deriveHokusMintReceiptPda(guard.programId, mintPublicKey);
       const mintRent = await getMinimumBalanceForRentExemptMint(this.connection);
       const tokenAccountRent = await getMinimumBalanceForRentExemptAccount(this.connection);
       const metadataRent = await this.connection.getMinimumBalanceForRentExemption(METADATA_ACCOUNT_SIZE);
@@ -142,6 +179,14 @@ export class MetaplexHokusNftClient implements HokusNftClient {
         feePayer: ownerPublicKey,
         recentBlockhash: latestBlockhash.blockhash
       }).add(
+        createHokusGuardMintInstruction({
+          programId: guard.programId,
+          configPda: guardConfigPda,
+          payer: ownerPublicKey,
+          treasury: guard.treasury,
+          receiptPda,
+          mint: mintPublicKey
+        }),
         SystemProgram.createAccount({
           fromPubkey: ownerPublicKey,
           newAccountPubkey: mintPublicKey,
@@ -280,6 +325,13 @@ export class MetaplexHokusNftClient implements HokusNftClient {
   }
 
   async getOwnedSoundNfts(ownerWallet: string): Promise<HokusNftMetadata[]> {
+    let guardProgramId: PublicKey;
+    try {
+      guardProgramId = resolveHokusMintGuardConfig().programId;
+    } catch {
+      return [];
+    }
+
     const owner = new PublicKey(ownerWallet);
     const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
       owner,
@@ -311,10 +363,14 @@ export class MetaplexHokusNftClient implements HokusNftClient {
     const metadataAddresses = mintAddresses.map(mintAddress =>
       findMetadataPda(new PublicKey(mintAddress))
     );
+    const receiptAddresses = mintAddresses.map(mintAddress =>
+      deriveHokusMintReceiptPda(guardProgramId, new PublicKey(mintAddress))
+    );
     const metadataAccounts = await this.connection.getMultipleAccountsInfo(
       metadataAddresses,
       'confirmed'
     );
+    const receiptAccounts = await this.connection.getMultipleAccountsInfo(receiptAddresses, 'confirmed');
 
     return metadataAccounts
       .map((account, index): HokusNftMetadata | null => {
@@ -323,6 +379,18 @@ export class MetaplexHokusNftClient implements HokusNftClient {
         }
 
         try {
+          const receipt = receiptAccounts[index];
+          const mintPublicKey = new PublicKey(mintAddresses[index]);
+          if (
+            !receipt ||
+            !receipt.owner.equals(guardProgramId) ||
+            receipt.data.length < RECEIPT_ACCOUNT_SIZE ||
+            receipt.data.readUInt8(0) !== 1 ||
+            !receipt.data.subarray(1, 33).equals(mintPublicKey.toBuffer())
+          ) {
+            return null;
+          }
+
           const [metadataAccount] = Metadata.deserialize(account.data);
           const name = metadataAccount.data.name.trim().replace(/\0/g, '');
           const description = `On-chain metadata (${metadataAccount.data.symbol.trim()})`;
@@ -340,6 +408,7 @@ export class MetaplexHokusNftClient implements HokusNftClient {
         }
       })
       .filter((item): item is HokusNftMetadata => item !== null)
-      .filter(item => item.name.toLowerCase().includes('hokus'));
+      .filter(item => item.name.toLowerCase().includes('hokus'))
+      .filter(item => item.description.includes(HOKUS_SYMBOL));
   }
 }

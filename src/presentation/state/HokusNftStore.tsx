@@ -133,6 +133,12 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   }, [walletAddress, nfts.length, usedFingerprints]);
 
   const mintFreeNft = useCallback(async (): Promise<MintResult> => {
+    const mintedSupply = await nftClient.getMintedSupply();
+    const maxSupply = nftClient.getMaxSupply();
+    if (mintedSupply >= maxSupply) {
+      throw new Error(`Max supply reached (${maxSupply}). New mints are disabled.`);
+    }
+
     const serial = nfts.length + 1;
     const localCandidate = createHokusMintCandidate(
       walletAddress ?? OWNER_WALLET,

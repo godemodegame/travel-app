@@ -1,7 +1,6 @@
 import React, {useMemo} from 'react';
 import {
   Animated,
-  ImageBackground,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -69,10 +68,7 @@ export const FocusScreen: React.FC = () => {
 
   return (
     <View style={styles.screen}>
-      <ImageBackground
-        source={{uri: 'https://upload.wikimedia.org/wikipedia/en/7/78/Bliss_%28Windows_XP%29.png'}}
-        resizeMode="cover"
-        style={styles.wallpaper}>
+      <View style={styles.wallpaper}>
         <View pointerEvents="none" style={styles.pixelOverlay}>
           {Array.from({length: 180}).map((_, index) => (
             <View
@@ -88,7 +84,7 @@ export const FocusScreen: React.FC = () => {
             />
           ))}
         </View>
-      </ImageBackground>
+      </View>
 
       <ScrollView contentContainerStyle={styles.container}>
         <View pointerEvents="none" style={styles.backgroundLayer}>
@@ -229,7 +225,8 @@ const styles = StyleSheet.create({
     flex: 1
   },
   wallpaper: {
-    ...StyleSheet.absoluteFillObject
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#6EA5D5'
   },
   pixelOverlay: {
     ...StyleSheet.absoluteFillObject

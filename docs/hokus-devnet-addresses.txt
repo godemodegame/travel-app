@@ -1,0 +1,19 @@
+Hokus Mint Guard (Devnet)
+
+Program ID:
+9HKJzk2RBA9UkLchsfiwJFxxa5diSHcEGG8VdorNMWQa
+
+Config PDA (seed: "hokus_config"):
+E8RajGR7nEiRLiHr5Qtxd1sM93ZksPS4s7pZaKsq3qZU
+
+Treasury:
+HgbKwfPdSYEepJbr5swoSYLfJbjywEgQgzDtG1tUoUrv
+
+Upgrade Authority / Fee Payer:
+HgbKwfPdSYEepJbr5swoSYLfJbjywEgQgzDtG1tUoUrv
+
+Deploy Signature:
+5WLtyt5S95M8YuX4YutrU1phmQ24uoayqQgs9uYsYPmrVB5ewFSpQrvzJrAUDf4sT5izsNGXgtSmtbqZ9MyDTrV1
+
+Initialize Signature:
+5xZJPVgNVeApjMnFe1X4wXQaK2SG9uPpwasXM5pns6k9vcuzsXsE1A6HBtHnpXa3pzewPwwCmfJaPMdsUk9tjTc

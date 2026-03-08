@@ -1,7 +1,7 @@
 import type {HokusNft} from '@/domain/models/HokusNft';
 import type {SoundParams} from '@/domain/models/SoundParams';
 
-export const FREE_MINT_PRICE_SOL = 0;
+export const FREE_MINT_PRICE_SOL = 0.1;
 
 const createSeededRandom = (seed: string): (() => number) => {
   let hash = 2166136261;

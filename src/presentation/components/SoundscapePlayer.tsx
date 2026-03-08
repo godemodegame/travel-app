@@ -182,10 +182,22 @@ export const SoundscapePlayer: React.FC<Props> = ({
         <WebView
           key={`sound-engine-${engineNonce}`}
           ref={webViewRef}
-          originWhitelist={['*']}
+          originWhitelist={['http://localhost:8081', 'about:blank']}
           source={{html: ENGINE_HTML, baseUrl: engineBaseUrl}}
           style={styles.webview}
+          cacheEnabled={false}
+          incognito
           javaScriptEnabled
+          mixedContentMode="never"
+          allowFileAccess={false}
+          allowingReadAccessToURL="about:blank"
+          setSupportMultipleWindows={false}
+          onShouldStartLoadWithRequest={request => {
+            if (request.url === 'about:blank' || request.url === engineBaseUrl) {
+              return true;
+            }
+            return request.url.startsWith(`${engineBaseUrl}/`);
+          }}
           onLoadEnd={() => {
             setIsReady(true);
             if (pendingAutoPlayRef.current) {
@@ -196,6 +208,10 @@ export const SoundscapePlayer: React.FC<Props> = ({
           onMessage={event => {
             try {
               const data = JSON.parse(event.nativeEvent.data);
+              if (!data || typeof data.type !== 'string') {
+                return;
+              }
+
               if (data.type === 'started') {
                 setIsLoading(false);
                 setIsPlaying(true);
@@ -206,21 +222,21 @@ export const SoundscapePlayer: React.FC<Props> = ({
                   stopFallbackTimerRef.current = null;
                 }
                 setIsLoading(false);
-              setIsPlaying(false);
-              setStatus('Stopped');
-            } else if (data.type === 'warning') {
-              setStatus(`Warning: ${data.message}`);
-            } else if (data.type === 'error') {
+                setIsPlaying(false);
+                setStatus('Stopped');
+              } else if (data.type === 'warning') {
+                setStatus(`Warning: ${typeof data.message === 'string' ? data.message : 'Unknown warning'}`);
+              } else if (data.type === 'error') {
+                setIsLoading(false);
+                setIsPlaying(false);
+                setStatus(`Error: ${typeof data.message === 'string' ? data.message : 'Unknown error'}`);
+              }
+            } catch {
               setIsLoading(false);
               setIsPlaying(false);
-              setStatus(`Error: ${data.message}`);
+              setStatus('Player message parse error');
             }
-          } catch {
-            setIsLoading(false);
-            setIsPlaying(false);
-            setStatus('Player message parse error');
-          }
-        }}
+          }}
         />
       ) : null}
 
