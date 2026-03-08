@@ -165,7 +165,7 @@ const SOUND_SAMPLE_ASSETS: Record<string, number> = {
   'wind/wind_soft_gust_13.wav': require('../../assets/audio/wind/wind_soft_gust_13.wav'),
 };
 
-export const resolveSampleAssetUri = (samplePath: string): string | null => {
+const resolveSampleAssetUri = (samplePath: string): string | null => {
   const assetRef = SOUND_SAMPLE_ASSETS[samplePath];
   if (!assetRef) {
     return null;
@@ -204,12 +204,4 @@ export const resolveSampleAssetUriCandidates = (samplePath: string): string[] =>
 
   // Use only the active dev-server origin to avoid slow retries across mixed emulator host modes.
   return [primary];
-};
-
-export const hasMappedSample = (samplePath: string): boolean => {
-  return Boolean(SOUND_SAMPLE_ASSETS[samplePath]);
-};
-
-export const getSampleAsset = (samplePath: string): number | null => {
-  return SOUND_SAMPLE_ASSETS[samplePath] ?? null;
 };

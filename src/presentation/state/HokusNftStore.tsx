@@ -11,7 +11,7 @@ import {MetaplexHokusNftClient} from '@/solana/nft/MetaplexHokusNftClient';
 import {createSolanaConnection} from '@/solana/rpc/createSolanaConnection';
 import {SeekerWalletAdapter} from '@/solana/wallet/SeekerWalletAdapter';
 
-export type MintResult = {
+type MintResult = {
   nft: HokusNft;
   signature: string;
 };
@@ -21,16 +21,13 @@ type HokusNftStoreValue = {
   activeNft: HokusNft | null;
   activeMintAddress: string | null;
   walletAddress: string | null;
-  hasSeenOnboarding: boolean;
   isStoreHydrated: boolean;
-  isSyncingNfts: boolean;
   mintPriceSol: number;
   globalAudioStopSignal: number;
   setActiveNft: (mintAddress: string) => void;
   requestGlobalAudioStop: () => void;
   connectWallet: () => Promise<string>;
   disconnectWallet: () => Promise<void>;
-  markOnboardingSeen: () => void;
   syncOwnedNfts: (ownerOverride?: string) => Promise<number>;
   mintFreeNft: () => Promise<MintResult>;
   getMintPreview: () => HokusNft;
@@ -38,7 +35,6 @@ type HokusNftStoreValue = {
 
 const OWNER_WALLET = 'SEEKER_WALLET_ADDRESS';
 const STORAGE_WALLET_ADDRESS_KEY = 'hokus.walletAddress';
-const STORAGE_ONBOARDING_KEY = 'hokus.hasSeenOnboarding';
 
 const HokusNftStoreContext = createContext<HokusNftStoreValue | null>(null);
 
@@ -46,9 +42,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   const [nfts, setNfts] = useState<HokusNft[]>([]);
   const [activeMintAddress, setActiveMintAddress] = useState<string | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
   const [isStoreHydrated, setIsStoreHydrated] = useState(false);
-  const [isSyncingNfts, setIsSyncingNfts] = useState(false);
   const [globalAudioStopSignal, setGlobalAudioStopSignal] = useState(0);
 
   const nftClient = useMemo(() => {
@@ -102,10 +96,6 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     const hydrate = async (): Promise<void> => {
       try {
         const walletFromStorage = await AsyncStorage.getItem(STORAGE_WALLET_ADDRESS_KEY);
-        const hasSeenOnboardingFromStorage =
-          (await AsyncStorage.getItem(STORAGE_ONBOARDING_KEY)) === 'true';
-
-        setHasSeenOnboarding(hasSeenOnboardingFromStorage);
 
         if (walletFromStorage) {
           setWalletAddress(walletFromStorage);
@@ -125,9 +115,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   const connectWallet = useCallback(async (): Promise<string> => {
     const session = await walletProvider.connect();
     setWalletAddress(session.walletAddress);
-    setHasSeenOnboarding(true);
     await AsyncStorage.setItem(STORAGE_WALLET_ADDRESS_KEY, session.walletAddress);
-    await AsyncStorage.setItem(STORAGE_ONBOARDING_KEY, 'true');
     return session.walletAddress;
   }, [walletProvider]);
 
@@ -148,28 +136,18 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     setGlobalAudioStopSignal(prev => prev + 1);
   }, []);
 
-  const markOnboardingSeen = useCallback((): void => {
-    setHasSeenOnboarding(true);
-    void AsyncStorage.setItem(STORAGE_ONBOARDING_KEY, 'true');
-  }, []);
-
   const syncOwnedNfts = useCallback(async (ownerOverride?: string): Promise<number> => {
-    setIsSyncingNfts(true);
-    try {
-      const owner = ownerOverride ?? walletAddress ?? (await connectWallet());
-      const owned = await nftClient.getOwnedSoundNfts(owner);
-      const imported = toLocalNfts(owner, owned);
+    const owner = ownerOverride ?? walletAddress ?? (await connectWallet());
+    const owned = await nftClient.getOwnedSoundNfts(owner);
+    const imported = toLocalNfts(owner, owned);
 
-      setNfts(imported);
-      setActiveMintAddress(prev =>
-        prev && imported.some(nft => nft.mintAddress === prev)
-          ? prev
-          : imported[0]?.mintAddress ?? null
-      );
-      return imported.length;
-    } finally {
-      setIsSyncingNfts(false);
-    }
+    setNfts(imported);
+    setActiveMintAddress(prev =>
+      prev && imported.some(nft => nft.mintAddress === prev)
+        ? prev
+        : imported[0]?.mintAddress ?? null
+    );
+    return imported.length;
   }, [walletAddress, connectWallet, nftClient, toLocalNfts]);
 
   const getMintPreview = useCallback((): HokusNft => {
@@ -226,16 +204,13 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     activeNft,
     activeMintAddress,
     walletAddress,
-    hasSeenOnboarding,
     isStoreHydrated,
-    isSyncingNfts,
     mintPriceSol: FREE_MINT_PRICE_SOL,
     globalAudioStopSignal,
     setActiveNft,
     requestGlobalAudioStop,
     connectWallet,
     disconnectWallet,
-    markOnboardingSeen,
     syncOwnedNfts,
     mintFreeNft,
     getMintPreview

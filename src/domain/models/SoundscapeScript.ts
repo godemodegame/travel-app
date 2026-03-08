@@ -1,6 +1,6 @@
 import type {SoundParams} from '@/domain/models/SoundParams';
 
-export type RarityTier = 'Common' | 'Rare' | 'Epic';
+type RarityTier = 'Common' | 'Rare' | 'Epic';
 
 export type SoundLayerType = 'rain' | 'thunder' | 'forest' | 'wind';
 

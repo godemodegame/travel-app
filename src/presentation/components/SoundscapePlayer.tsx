@@ -35,8 +35,6 @@ const ENGINE_HTML = `
   let activeNodes = [];
   let activeIntervals = [];
   let sampleBufferCache = {};
-  let activeSampleCounts = {};
-  let activeSyntheticCounts = {};
 
   function post(type, data) {
     if (!window.ReactNativeWebView) {
@@ -60,9 +58,6 @@ const ENGINE_HTML = `
       try { clearInterval(intervalId); } catch (_) {}
     });
     activeIntervals = [];
-    activeSampleCounts = {};
-    activeSyntheticCounts = {};
-    post('playback_state', {samples: [], synthetic: []});
 
     activeNodes.forEach(node => {
       try { node.stop && node.stop(); } catch (_) {}
@@ -164,43 +159,7 @@ const ENGINE_HTML = `
     }
   }
 
-  function emitPlaybackState() {
-    const samples = Object.keys(activeSampleCounts).filter(name => activeSampleCounts[name] > 0).sort();
-    const synthetic = Object.keys(activeSyntheticCounts).filter(name => activeSyntheticCounts[name] > 0).sort();
-    post('playback_state', {samples: samples, synthetic: synthetic});
-  }
-
-  function markSampleStart(sampleName) {
-    activeSampleCounts[sampleName] = (activeSampleCounts[sampleName] || 0) + 1;
-    emitPlaybackState();
-  }
-
-  function markSampleEnd(sampleName) {
-    const next = (activeSampleCounts[sampleName] || 0) - 1;
-    if (next <= 0) {
-      delete activeSampleCounts[sampleName];
-    } else {
-      activeSampleCounts[sampleName] = next;
-    }
-    emitPlaybackState();
-  }
-
-  function markSyntheticStart(name) {
-    activeSyntheticCounts[name] = (activeSyntheticCounts[name] || 0) + 1;
-    emitPlaybackState();
-  }
-
-  function markSyntheticEnd(name) {
-    const next = (activeSyntheticCounts[name] || 0) - 1;
-    if (next <= 0) {
-      delete activeSyntheticCounts[name];
-    } else {
-      activeSyntheticCounts[name] = next;
-    }
-    emitPlaybackState();
-  }
-
-  function scheduleSampleEvent(audioCtx, destination, event, sampleName, sampleBuffer, nowSec) {
+  function scheduleSampleEvent(audioCtx, destination, event, sampleBuffer, nowSec) {
     const at = nowSec + event.atSecond;
     const panner = audioCtx.createStereoPanner();
     panner.pan.value = event.pan || 0;
@@ -219,16 +178,6 @@ const ENGINE_HTML = `
     source.start(at);
     source.stop(at + Math.max(0.06, event.durationSec || 0.2));
     activeNodes.push(source, panner, gain);
-
-    const startDelayMs = Math.max(0, (at - audioCtx.currentTime) * 1000);
-    const endDelayMs = startDelayMs + Math.max(60, (event.durationSec || 0.2) * 1000) + 20;
-    const onStartTimer = setTimeout(function () {
-      markSampleStart(sampleName);
-    }, startDelayMs);
-    const onEndTimer = setTimeout(function () {
-      markSampleEnd(sampleName);
-    }, endDelayMs);
-    activeIntervals.push(onStartTimer, onEndTimer);
   }
 
   function scheduleRainFallback(audioCtx, destination, loopLengthSec, gain, brightness) {
@@ -254,7 +203,6 @@ const ENGINE_HTML = `
 
     baseSrc.start();
     activeNodes.push(baseSrc, low, high, g);
-    markSyntheticStart('rain_fallback_noise');
   }
 
   function scheduleLoop(script) {
@@ -278,7 +226,7 @@ const ENGINE_HTML = `
         if (!sampleBuffer) {
           return;
         }
-        scheduleSampleEvent(audioCtx, masterNode, event, sampleName, sampleBuffer, now);
+        scheduleSampleEvent(audioCtx, masterNode, event, sampleBuffer, now);
       });
     });
   }
@@ -367,8 +315,6 @@ export const SoundscapePlayer: React.FC<Props> = ({
   const remountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [activeSamples, setActiveSamples] = useState<string[]>([]);
-  const [activeSynthetic, setActiveSynthetic] = useState<string[]>([]);
   const [isReady, setIsReady] = useState(false);
   const [status, setStatus] = useState<string>('Idle');
   const [engineNonce, setEngineNonce] = useState(0);
@@ -435,8 +381,6 @@ export const SoundscapePlayer: React.FC<Props> = ({
 
     setIsLoading(false);
     setIsPlaying(false);
-    setActiveSamples([]);
-    setActiveSynthetic([]);
     setStatus('Stopped');
     pendingAutoPlayRef.current = false;
     webViewRef.current?.injectJavaScript('window.__hokusStop(); true;');
@@ -542,30 +486,21 @@ export const SoundscapePlayer: React.FC<Props> = ({
                   stopFallbackTimerRef.current = null;
                 }
                 setIsLoading(false);
-                setIsPlaying(false);
-                setActiveSamples([]);
-                setActiveSynthetic([]);
-                setStatus('Stopped');
-              } else if (data.type === 'playback_state') {
-                setActiveSamples(Array.isArray(data.samples) ? data.samples : []);
-                setActiveSynthetic(Array.isArray(data.synthetic) ? data.synthetic : []);
-              } else if (data.type === 'warning') {
-                setStatus(`Warning: ${data.message}`);
-              } else if (data.type === 'error') {
-                setIsLoading(false);
-                setIsPlaying(false);
-                setActiveSamples([]);
-                setActiveSynthetic([]);
-                setStatus(`Error: ${data.message}`);
-              }
-            } catch {
+              setIsPlaying(false);
+              setStatus('Stopped');
+            } else if (data.type === 'warning') {
+              setStatus(`Warning: ${data.message}`);
+            } else if (data.type === 'error') {
               setIsLoading(false);
               setIsPlaying(false);
-              setActiveSamples([]);
-              setActiveSynthetic([]);
-              setStatus('Player message parse error');
+              setStatus(`Error: ${data.message}`);
             }
-          }}
+          } catch {
+            setIsLoading(false);
+            setIsPlaying(false);
+            setStatus('Player message parse error');
+          }
+        }}
         />
       ) : null}
 
