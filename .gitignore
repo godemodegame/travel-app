@@ -36,6 +36,10 @@ web/.vercel/
 # TypeScript
 *.tsbuildinfo
 
+# Rust / Solana programs
+contracts/**/target/
+*.so
+
 # Environment
 .env
 .env.*
