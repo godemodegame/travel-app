@@ -4,7 +4,7 @@ import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import {FocusScreen} from '@/presentation/screens/focus/FocusScreen';
 import {MintScreen} from '@/presentation/screens/mint/MintScreen';
-import {LibraryScreen} from '@/presentation/screens/library/LibraryScreen';
+import {SettingsScreen} from '@/presentation/screens/settings/SettingsScreen';
 import {colors} from '@/theme/colors';
 
 export type RootTabParamList = {
@@ -60,7 +60,7 @@ export const AppNavigator: React.FC = () => {
         />
         <Tab.Screen
           name="Settings"
-          component={LibraryScreen}
+          component={SettingsScreen}
           options={{
             tabBarIcon: ({color, size}) => (
               <MaterialIcons name="settings" color={color} size={size + 2} />

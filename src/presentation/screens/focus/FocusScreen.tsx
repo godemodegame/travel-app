@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useMemo} from 'react';
 import {
   Animated,
   ImageBackground,
@@ -14,145 +14,45 @@ import type {BottomTabNavigationProp} from '@react-navigation/bottom-tabs';
 import {generateSoundscapeScript} from '@/domain/usecases/generateSoundscapeScript';
 import {SoundscapePlayer} from '@/presentation/components/SoundscapePlayer';
 import type {RootTabParamList} from '@/presentation/navigation/AppNavigator';
-import {useHokusNftStore} from '@/presentation/state/HokusNftStore';
+import {useAudioControl, useNftCatalog} from '@/presentation/state/HokusNftStore';
+import {useFocusPlaybackController} from '@/presentation/screens/focus/useFocusPlaybackController';
+import {createWindowStack} from '@/presentation/screens/focus/backgroundWindows';
+import {useWindowChaosAnimation} from '@/presentation/screens/focus/useWindowChaosAnimation';
 
 type FocusNavigation = BottomTabNavigationProp<RootTabParamList>;
 
-type BgWindow = {
-  top: number;
-  left: `${number}%`;
-  width: `${number}%`;
-  height: number;
-  rotate: string;
-  opacity: number;
-  zIndex: number;
-  barColor: string;
-  appName: string;
-  status: string;
-  lines: [`${number}%`, `${number}%`, `${number}%`];
-};
-
-const createWindowStack = (screenHeight: number): BgWindow[] => {
-  const appNames = [
-    'Rain Logs', 'Mint Queue', 'Forest FX', 'Storm Lab', 'Wave Cache', 'Loop Tool', 'Audio Bus',
-    'NFT Traits', 'Session', 'Thunder RNG', 'Wind Mod', 'Memory', 'Bird Layer', 'Patch Notes',
-    'Tones', 'Profile', 'Mint Gas', 'Explorer', 'Deck', 'Cache', 'Ambient', 'Mixer'
-  ] as const;
-  const statuses = [
-    'Syncing...', 'Waiting', 'Idle', 'Analyzing', 'Indexed', 'Ready', '0 drops',
-    'Loaded', 'Focus mode', 'Seeded', 'Calm', '66% free', 'Muted', 'v0.1',
-    'Queued', 'Connected', '0.00', 'Pinned', 'Warm', 'Preview', 'Armed'
-  ] as const;
-  const barColors = [
-    '#214C9A', '#7A1442', '#2F6D40', '#2D3A9E', '#7B5C0F', '#4A4A4A', '#0F4E79',
-    '#6B2B88', '#166446', '#6B1C1C', '#2D2D2D', '#1C5A72', '#734A11', '#273A87',
-    '#3F1D78', '#0E5D4C', '#86550F', '#6A2340'
-  ] as const;
-
-  let seed = 872341;
-  const rand = (): number => {
-    seed = (seed * 1664525 + 1013904223) % 4294967296;
-    return seed / 4294967296;
-  };
-
-  const verticalMax = Math.max(520, Math.floor(screenHeight + 180));
-
-  return Array.from({length: 120}).map((_, index) => {
-    const width = `${34 + Math.floor(rand() * 18)}%` as const;
-    const height = 70 + Math.floor(rand() * 34);
-    const top = -40 + Math.floor(rand() * verticalMax);
-    const left = `${-18 + Math.floor(rand() * 98)}%` as const;
-    const rotate = `${-4 + rand() * 8}deg`;
-    const opacity = 0.44 + rand() * 0.22;
-    const zIndex = Math.floor(rand() * 10) + 1;
-    const line1 = `${48 + Math.floor(rand() * 45)}%` as const;
-    const line2 = `${40 + Math.floor(rand() * 42)}%` as const;
-    const line3 = `${44 + Math.floor(rand() * 40)}%` as const;
-
-    return {
-      top,
-      left,
-      width,
-      height,
-      rotate,
-      opacity,
-      zIndex,
-      barColor: barColors[index % barColors.length],
-      appName: appNames[index % appNames.length],
-      status: statuses[(index * 3) % statuses.length],
-      lines: [line1, line2, line3]
-    };
-  });
-};
-
 export const FocusScreen: React.FC = () => {
   const navigation = useNavigation<FocusNavigation>();
-  const {
-    activeNft,
-    nfts,
-    activeMintAddress,
-    setActiveNft,
-    globalAudioStopSignal,
-    requestGlobalAudioStop
-  } = useHokusNftStore();
-  const [autoPlaySignal, setAutoPlaySignal] = useState<number | undefined>(undefined);
-  const [stopSignal, setStopSignal] = useState<number | undefined>(undefined);
-  const [isTrackPlaying, setIsTrackPlaying] = useState(false);
-  const [isPlayerMounted, setIsPlayerMounted] = useState(true);
-  const [timelineSec, setTimelineSec] = useState(0);
+  const {activeNft, nfts, activeMintAddress, setActiveNft} = useNftCatalog();
+  const {globalAudioStopSignal, requestGlobalAudioStop} = useAudioControl();
   const {height} = useWindowDimensions();
-  const driftXRefs = useRef<Animated.Value[]>([]);
-  const driftYRefs = useRef<Animated.Value[]>([]);
-  const activeAnimationsRef = useRef<Array<Animated.CompositeAnimation | null>>([]);
-  const playerRemountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const script = useMemo(() => {
     return activeNft ? generateSoundscapeScript(activeNft) : null;
   }, [activeNft]);
 
-  const handlePrimaryAction = (): void => {
-    if (!activeNft) {
-      navigation.navigate('Mint');
-      return;
-    }
-    if (isTrackPlaying) {
-      setStopSignal(prev => (prev ?? 0) + 1);
-      requestGlobalAudioStop();
-      setIsTrackPlaying(false);
-      if (playerRemountTimerRef.current) {
-        clearTimeout(playerRemountTimerRef.current);
-      }
-      setIsPlayerMounted(false);
-      playerRemountTimerRef.current = setTimeout(() => {
-        setIsPlayerMounted(true);
-        playerRemountTimerRef.current = null;
-      }, 16);
-    } else {
-      setAutoPlaySignal(prev => (prev ?? 0) + 1);
-    }
-  };
-
-  const handleSelectNft = (mintAddress: string): void => {
-    if (mintAddress === activeMintAddress) {
-      return;
-    }
-    setStopSignal(prev => (prev ?? 0) + 1);
-    requestGlobalAudioStop();
-    setIsTrackPlaying(false);
-    if (playerRemountTimerRef.current) {
-      clearTimeout(playerRemountTimerRef.current);
-      playerRemountTimerRef.current = null;
-    }
-    setIsPlayerMounted(true);
-    setActiveNft(mintAddress);
-  };
+  const {
+    autoPlaySignal,
+    effectiveStopSignal,
+    isTrackPlaying,
+    isPlayerMounted,
+    timelineSec,
+    handlePrimaryAction,
+    handleSelectNft,
+    onPlaybackStateChange
+  } = useFocusPlaybackController({
+    activeNft,
+    activeMintAddress,
+    setActiveNft,
+    globalAudioStopSignal,
+    requestGlobalAudioStop,
+    onRequestMint: () => navigation.navigate('Mint')
+  });
 
   const layerLabel = script?.layers.map(layer => layer.type).join(' / ');
   const windowStack = useMemo(() => createWindowStack(height), [height]);
+  const {driftXRefs, driftYRefs} = useWindowChaosAnimation(windowStack.length);
   const loopLengthSec = activeNft?.loopLengthSec ?? 0;
-  const effectiveStopSignal = useMemo(() => {
-    return stopSignal === undefined ? globalAudioStopSignal : stopSignal + globalAudioStopSignal;
-  }, [stopSignal, globalAudioStopSignal]);
   const progressPercent: `${number}%` =
     loopLengthSec > 0
       ? `${Math.min(100, (timelineSec / loopLengthSec) * 100)}%`
@@ -166,82 +66,6 @@ export const FocusScreen: React.FC = () => {
     const ss = (safe % 60).toString().padStart(2, '0');
     return `${mm}:${ss}`;
   };
-
-  useEffect(() => {
-    setTimelineSec(0);
-  }, [activeNft?.mintAddress]);
-
-  useEffect(() => {
-    return () => {
-      if (playerRemountTimerRef.current) {
-        clearTimeout(playerRemountTimerRef.current);
-        playerRemountTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTrackPlaying || loopLengthSec <= 0) {
-      if (!isTrackPlaying) {
-        setTimelineSec(0);
-      }
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setTimelineSec(prev => {
-        const next = prev + 0.2;
-        return next >= loopLengthSec ? 0 : next;
-      });
-    }, 200);
-
-    return () => clearInterval(interval);
-  }, [isTrackPlaying, loopLengthSec]);
-
-  if (driftXRefs.current.length !== windowStack.length) {
-    driftXRefs.current = windowStack.map((_, index) => driftXRefs.current[index] ?? new Animated.Value(0));
-    driftYRefs.current = windowStack.map((_, index) => driftYRefs.current[index] ?? new Animated.Value(0));
-    activeAnimationsRef.current = windowStack.map((_, index) => activeAnimationsRef.current[index] ?? null);
-  }
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    const runChaos = (index: number): void => {
-      if (isCancelled) {
-        return;
-      }
-
-      const x = driftXRefs.current[index];
-      const y = driftYRefs.current[index];
-      const maxX = 5 + (index % 8);
-      const maxY = 4 + (index % 6);
-      const toX = (Math.random() * 2 - 1) * maxX;
-      const toY = (Math.random() * 2 - 1) * maxY;
-      const duration = 1600 + Math.floor(Math.random() * 3800);
-
-      const animation = Animated.parallel([
-        Animated.timing(x, {toValue: toX, duration, useNativeDriver: true}),
-        Animated.timing(y, {toValue: toY, duration, useNativeDriver: true})
-      ]);
-
-      activeAnimationsRef.current[index] = animation;
-      animation.start(({finished}) => {
-        if (finished && !isCancelled) {
-          runChaos(index);
-        }
-      });
-    };
-
-    windowStack.forEach((_, index) => runChaos(index));
-
-    return () => {
-      isCancelled = true;
-      activeAnimationsRef.current.forEach(animation => animation?.stop());
-      driftXRefs.current.forEach(value => value.stopAnimation());
-      driftYRefs.current.forEach(value => value.stopAnimation());
-    };
-  }, [windowStack]);
 
   return (
     <View style={styles.screen}>
@@ -389,7 +213,7 @@ export const FocusScreen: React.FC = () => {
                 title={`${activeNft.name} soundtrack`}
                 autoPlaySignal={autoPlaySignal}
                 stopSignal={effectiveStopSignal}
-                onPlaybackStateChange={setIsTrackPlaying}
+                onPlaybackStateChange={onPlaybackStateChange}
                 hideControls
               />
             ) : null}

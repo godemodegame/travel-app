@@ -1,15 +1,13 @@
 import React, {createContext, useCallback, useContext, useEffect, useMemo, useState} from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {HokusNft} from '@/domain/models/HokusNft';
 import {
   FREE_MINT_PRICE_SOL,
-  buildSoundFingerprint,
-  buildSoundParams,
   createHokusMintCandidate
 } from '@/domain/usecases/mintFreeHokusNft';
-import {MetaplexHokusNftClient} from '@/solana/nft/MetaplexHokusNftClient';
-import {createSolanaConnection} from '@/solana/rpc/createSolanaConnection';
-import {SeekerWalletAdapter} from '@/solana/wallet/SeekerWalletAdapter';
+import {OWNER_WALLET} from '@/presentation/state/hokusStoreConstants';
+import {useHokusStoreDependencies} from '@/presentation/state/hokusStoreDependencies';
+import {toLocalNfts, toMintMetadata} from '@/presentation/state/hokusStoreMappers';
+import {resolveActiveNft, resolveNextActiveMintAddress} from '@/presentation/state/hokusStoreSelectors';
 
 type MintResult = {
   nft: HokusNft;
@@ -33,8 +31,27 @@ type HokusNftStoreValue = {
   getMintPreview: () => HokusNft;
 };
 
-const OWNER_WALLET = 'SEEKER_WALLET_ADDRESS';
-const STORAGE_WALLET_ADDRESS_KEY = 'hokus.walletAddress';
+export type WalletSessionState = Pick<
+  HokusNftStoreValue,
+  'walletAddress' | 'isStoreHydrated' | 'connectWallet' | 'disconnectWallet'
+>;
+
+export type NftCatalogState = Pick<
+  HokusNftStoreValue,
+  | 'nfts'
+  | 'activeNft'
+  | 'activeMintAddress'
+  | 'mintPriceSol'
+  | 'setActiveNft'
+  | 'syncOwnedNfts'
+  | 'mintFreeNft'
+  | 'getMintPreview'
+>;
+
+export type AudioControlState = Pick<
+  HokusNftStoreValue,
+  'globalAudioStopSignal' | 'requestGlobalAudioStop'
+>;
 
 const HokusNftStoreContext = createContext<HokusNftStoreValue | null>(null);
 
@@ -44,58 +61,22 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [isStoreHydrated, setIsStoreHydrated] = useState(false);
   const [globalAudioStopSignal, setGlobalAudioStopSignal] = useState(0);
-
-  const nftClient = useMemo(() => {
-    return new MetaplexHokusNftClient(createSolanaConnection('devnet'));
-  }, []);
-  const walletProvider = useMemo(() => {
-    return new SeekerWalletAdapter();
-  }, []);
+  const {
+    nftClient,
+    walletProvider,
+    loadStoredWalletAddress,
+    persistWalletAddress,
+    clearStoredWalletAddress
+  } = useHokusStoreDependencies();
 
   const usedFingerprints = useMemo(() => {
     return new Set(nfts.map(nft => nft.soundFingerprint));
   }, [nfts]);
 
-  const deriveLoopLengthSec = useCallback((seed: string): number => {
-    const params = buildSoundParams(seed);
-    const score =
-      params.rainIntensity +
-      params.thunderChance +
-      params.forestDensity +
-      params.windDepth +
-      params.rhythmComplexity;
-    return 48 + (score % 133);
-  }, []);
-
-  const toLocalNfts = useCallback(
-    (owner: string, owned: Array<{mintAddress?: string; name: string}>): HokusNft[] => {
-      return owned.map((item, index): HokusNft => {
-        const mintAddress = item.mintAddress ?? `imported-${index}`;
-        const traitSeed = `onchain:${owner}:${mintAddress}`;
-        const soundParams = buildSoundParams(traitSeed);
-        const name = item.name || `Hokus Sound #${String(index + 1).padStart(4, '0')}`;
-
-        return {
-          mintAddress,
-          serial: index + 1,
-          name,
-          ownerWallet: owner,
-          traitSeed,
-          soundFingerprint: buildSoundFingerprint(soundParams),
-          soundParams,
-          loopLengthSec: deriveLoopLengthSec(traitSeed),
-          mintedAtIso: new Date().toISOString(),
-          mintPriceSol: FREE_MINT_PRICE_SOL
-        };
-      });
-    },
-    [deriveLoopLengthSec]
-  );
-
   useEffect(() => {
     const hydrate = async (): Promise<void> => {
       try {
-        const walletFromStorage = await AsyncStorage.getItem(STORAGE_WALLET_ADDRESS_KEY);
+        const walletFromStorage = await loadStoredWalletAddress();
 
         if (walletFromStorage) {
           setWalletAddress(walletFromStorage);
@@ -110,14 +91,14 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     };
 
     void hydrate();
-  }, [nftClient, toLocalNfts]);
+  }, [loadStoredWalletAddress, nftClient]);
 
   const connectWallet = useCallback(async (): Promise<string> => {
     const session = await walletProvider.connect();
     setWalletAddress(session.walletAddress);
-    await AsyncStorage.setItem(STORAGE_WALLET_ADDRESS_KEY, session.walletAddress);
+    await persistWalletAddress(session.walletAddress);
     return session.walletAddress;
-  }, [walletProvider]);
+  }, [persistWalletAddress, walletProvider]);
 
   const disconnectWallet = useCallback(async (): Promise<void> => {
     setGlobalAudioStopSignal(prev => prev + 1);
@@ -125,8 +106,8 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     setWalletAddress(null);
     setNfts([]);
     setActiveMintAddress(null);
-    await AsyncStorage.removeItem(STORAGE_WALLET_ADDRESS_KEY);
-  }, [walletProvider]);
+    await clearStoredWalletAddress();
+  }, [clearStoredWalletAddress, walletProvider]);
 
   const setActiveNft = useCallback((mintAddress: string): void => {
     setActiveMintAddress(mintAddress);
@@ -142,13 +123,9 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     const imported = toLocalNfts(owner, owned);
 
     setNfts(imported);
-    setActiveMintAddress(prev =>
-      prev && imported.some(nft => nft.mintAddress === prev)
-        ? prev
-        : imported[0]?.mintAddress ?? null
-    );
+    setActiveMintAddress(prev => resolveNextActiveMintAddress(prev, imported));
     return imported.length;
-  }, [walletAddress, connectWallet, nftClient, toLocalNfts]);
+  }, [walletAddress, connectWallet, nftClient]);
 
   const getMintPreview = useCallback((): HokusNft => {
     const serial = nfts.length + 1;
@@ -163,19 +140,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
       usedFingerprints
     );
 
-    const metadata = {
-      name: localCandidate.name,
-      description: 'Hokus focus NFT: unique script-based rain sound profile',
-      attributes: Object.fromEntries(
-        [
-          ...Object.entries(localCandidate.soundParams).map(([key, value]) => [key, String(value)]),
-          ['loopLengthSec', String(localCandidate.loopLengthSec)]
-        ]
-      ),
-      audioScriptUri: `https://example.com/hokus/script/${localCandidate.soundFingerprint}.json`
-    };
-
-    const minted = await nftClient.mintSoundNft(metadata);
+    const minted = await nftClient.mintSoundNft(toMintMetadata(localCandidate));
 
     const nft: HokusNft = {
       ...localCandidate,
@@ -190,13 +155,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   }, [walletAddress, nftClient, nfts.length, usedFingerprints]);
 
   const activeNft = useMemo(() => {
-    if (nfts.length === 0) {
-      return null;
-    }
-    if (!activeMintAddress) {
-      return nfts[0];
-    }
-    return nfts.find(nft => nft.mintAddress === activeMintAddress) ?? nfts[0];
+    return resolveActiveNft(nfts, activeMintAddress);
   }, [nfts, activeMintAddress]);
 
   const value: HokusNftStoreValue = {
@@ -226,4 +185,36 @@ export const useHokusNftStore = (): HokusNftStoreValue => {
   }
 
   return context;
+};
+
+export const useWalletSession = (): WalletSessionState => {
+  const store = useHokusNftStore();
+  return {
+    walletAddress: store.walletAddress,
+    isStoreHydrated: store.isStoreHydrated,
+    connectWallet: store.connectWallet,
+    disconnectWallet: store.disconnectWallet
+  };
+};
+
+export const useNftCatalog = (): NftCatalogState => {
+  const store = useHokusNftStore();
+  return {
+    nfts: store.nfts,
+    activeNft: store.activeNft,
+    activeMintAddress: store.activeMintAddress,
+    mintPriceSol: store.mintPriceSol,
+    setActiveNft: store.setActiveNft,
+    syncOwnedNfts: store.syncOwnedNfts,
+    mintFreeNft: store.mintFreeNft,
+    getMintPreview: store.getMintPreview
+  };
+};
+
+export const useAudioControl = (): AudioControlState => {
+  const store = useHokusNftStore();
+  return {
+    globalAudioStopSignal: store.globalAudioStopSignal,
+    requestGlobalAudioStop: store.requestGlobalAudioStop
+  };
 };

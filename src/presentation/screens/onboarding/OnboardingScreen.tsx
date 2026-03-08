@@ -7,7 +7,7 @@ import {
   Text,
   View
 } from 'react-native';
-import {useHokusNftStore} from '@/presentation/state/HokusNftStore';
+import {useNftCatalog, useWalletSession} from '@/presentation/state/HokusNftStore';
 
 type Props = {
   onFinish: () => void;
@@ -29,7 +29,8 @@ const ONBOARDING_STEPS = [
 ] as const;
 
 export const OnboardingScreen: React.FC<Props> = ({onFinish}) => {
-  const {walletAddress, connectWallet, syncOwnedNfts} = useHokusNftStore();
+  const {walletAddress, connectWallet} = useWalletSession();
+  const {syncOwnedNfts} = useNftCatalog();
   const [stepIndex, setStepIndex] = useState(0);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);

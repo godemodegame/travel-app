@@ -2,11 +2,11 @@ import React, {useMemo, useState} from 'react';
 import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {generateSoundscapeScript} from '@/domain/usecases/generateSoundscapeScript';
 import {SectionCard} from '@/presentation/components/SectionCard';
-import {useHokusNftStore} from '@/presentation/state/HokusNftStore';
+import {useNftCatalog} from '@/presentation/state/HokusNftStore';
 import {colors} from '@/theme/colors';
 
 export const MintScreen: React.FC = () => {
-  const {mintPriceSol, mintFreeNft, getMintPreview} = useHokusNftStore();
+  const {mintPriceSol, mintFreeNft, getMintPreview} = useNftCatalog();
   const [isMinting, setIsMinting] = useState(false);
   const [lastMinted, setLastMinted] = useState<{name: string; signature: string} | null>(null);
   const [mintError, setMintError] = useState<string | null>(null);

@@ -2,11 +2,11 @@ import React from 'react';
 import {StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {AppNavigator} from '@/presentation/navigation/AppNavigator';
-import {HokusNftStoreProvider, useHokusNftStore} from '@/presentation/state/HokusNftStore';
+import {HokusNftStoreProvider, useWalletSession} from '@/presentation/state/HokusNftStore';
 import {OnboardingScreen} from '@/presentation/screens/onboarding/OnboardingScreen';
 
 const RootContent: React.FC = () => {
-  const {walletAddress, isStoreHydrated} = useHokusNftStore();
+  const {walletAddress, isStoreHydrated} = useWalletSession();
 
   if (!isStoreHydrated) {
     return <View style={styles.bootScreen} />;

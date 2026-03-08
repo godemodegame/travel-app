@@ -1,10 +1,11 @@
 import React, {useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {useHokusNftStore} from '@/presentation/state/HokusNftStore';
+import {useAudioControl, useWalletSession} from '@/presentation/state/HokusNftStore';
 import {colors} from '@/theme/colors';
 
-export const LibraryScreen: React.FC = () => {
-  const {walletAddress, disconnectWallet, requestGlobalAudioStop} = useHokusNftStore();
+export const SettingsScreen: React.FC = () => {
+  const {walletAddress, disconnectWallet} = useWalletSession();
+  const {requestGlobalAudioStop} = useAudioControl();
   const [error, setError] = useState<string | null>(null);
 
   const handleDisconnect = async (): Promise<void> => {
