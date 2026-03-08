@@ -202,20 +202,8 @@ export const resolveSampleAssetUriCandidates = (samplePath: string): string[] =>
     return [];
   }
 
-  const match = primary.match(/^http:\/\/[^/]+(:\d+)?(\/.*)$/);
-  const pathAndQuery = match?.[2];
-  if (!pathAndQuery) {
-    return [primary];
-  }
-
-  const variants = [
-    primary,
-    `http://10.0.2.2:8081${pathAndQuery}`,
-    `http://127.0.0.1:8081${pathAndQuery}`,
-    `http://localhost:8081${pathAndQuery}`
-  ];
-
-  return Array.from(new Set(variants));
+  // Use only the active dev-server origin to avoid slow retries across mixed emulator host modes.
+  return [primary];
 };
 
 export const hasMappedSample = (samplePath: string): boolean => {

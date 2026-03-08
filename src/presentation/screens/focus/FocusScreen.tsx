@@ -87,15 +87,24 @@ const createWindowStack = (screenHeight: number): BgWindow[] => {
 
 export const FocusScreen: React.FC = () => {
   const navigation = useNavigation<FocusNavigation>();
-  const {activeNft, nfts, activeMintAddress, setActiveNft} = useHokusNftStore();
+  const {
+    activeNft,
+    nfts,
+    activeMintAddress,
+    setActiveNft,
+    globalAudioStopSignal,
+    requestGlobalAudioStop
+  } = useHokusNftStore();
   const [autoPlaySignal, setAutoPlaySignal] = useState<number | undefined>(undefined);
   const [stopSignal, setStopSignal] = useState<number | undefined>(undefined);
   const [isTrackPlaying, setIsTrackPlaying] = useState(false);
+  const [isPlayerMounted, setIsPlayerMounted] = useState(true);
   const [timelineSec, setTimelineSec] = useState(0);
   const {height} = useWindowDimensions();
   const driftXRefs = useRef<Animated.Value[]>([]);
   const driftYRefs = useRef<Animated.Value[]>([]);
   const activeAnimationsRef = useRef<Array<Animated.CompositeAnimation | null>>([]);
+  const playerRemountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const script = useMemo(() => {
     return activeNft ? generateSoundscapeScript(activeNft) : null;
@@ -108,6 +117,16 @@ export const FocusScreen: React.FC = () => {
     }
     if (isTrackPlaying) {
       setStopSignal(prev => (prev ?? 0) + 1);
+      requestGlobalAudioStop();
+      setIsTrackPlaying(false);
+      if (playerRemountTimerRef.current) {
+        clearTimeout(playerRemountTimerRef.current);
+      }
+      setIsPlayerMounted(false);
+      playerRemountTimerRef.current = setTimeout(() => {
+        setIsPlayerMounted(true);
+        playerRemountTimerRef.current = null;
+      }, 16);
     } else {
       setAutoPlaySignal(prev => (prev ?? 0) + 1);
     }
@@ -118,13 +137,22 @@ export const FocusScreen: React.FC = () => {
       return;
     }
     setStopSignal(prev => (prev ?? 0) + 1);
+    requestGlobalAudioStop();
     setIsTrackPlaying(false);
+    if (playerRemountTimerRef.current) {
+      clearTimeout(playerRemountTimerRef.current);
+      playerRemountTimerRef.current = null;
+    }
+    setIsPlayerMounted(true);
     setActiveNft(mintAddress);
   };
 
   const layerLabel = script?.layers.map(layer => layer.type).join(' / ');
   const windowStack = useMemo(() => createWindowStack(height), [height]);
   const loopLengthSec = activeNft?.loopLengthSec ?? 0;
+  const effectiveStopSignal = useMemo(() => {
+    return stopSignal === undefined ? globalAudioStopSignal : stopSignal + globalAudioStopSignal;
+  }, [stopSignal, globalAudioStopSignal]);
   const progressPercent: `${number}%` =
     loopLengthSec > 0
       ? `${Math.min(100, (timelineSec / loopLengthSec) * 100)}%`
@@ -142,6 +170,15 @@ export const FocusScreen: React.FC = () => {
   useEffect(() => {
     setTimelineSec(0);
   }, [activeNft?.mintAddress]);
+
+  useEffect(() => {
+    return () => {
+      if (playerRemountTimerRef.current) {
+        clearTimeout(playerRemountTimerRef.current);
+        playerRemountTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTrackPlaying || loopLengthSec <= 0) {
@@ -346,12 +383,12 @@ export const FocusScreen: React.FC = () => {
               </View>
             ) : null}
 
-            {activeNft && script ? (
+            {activeNft && script && isPlayerMounted ? (
               <SoundscapePlayer
                 script={script}
                 title={`${activeNft.name} soundtrack`}
                 autoPlaySignal={autoPlaySignal}
-                stopSignal={stopSignal}
+                stopSignal={effectiveStopSignal}
                 onPlaybackStateChange={setIsTrackPlaying}
                 hideControls
               />

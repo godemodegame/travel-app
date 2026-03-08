@@ -10,7 +10,7 @@ import {colors} from '@/theme/colors';
 export type RootTabParamList = {
   Focus: undefined;
   Mint: undefined;
-  'My NFTs': undefined;
+  Settings: undefined;
 };
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
@@ -59,11 +59,11 @@ export const AppNavigator: React.FC = () => {
           }}
         />
         <Tab.Screen
-          name="My NFTs"
+          name="Settings"
           component={LibraryScreen}
           options={{
             tabBarIcon: ({color, size}) => (
-              <MaterialIcons name="library-music" color={color} size={size + 2} />
+              <MaterialIcons name="settings" color={color} size={size + 2} />
             )
           }}
         />

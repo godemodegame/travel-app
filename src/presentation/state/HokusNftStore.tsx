@@ -25,7 +25,9 @@ type HokusNftStoreValue = {
   isStoreHydrated: boolean;
   isSyncingNfts: boolean;
   mintPriceSol: number;
+  globalAudioStopSignal: number;
   setActiveNft: (mintAddress: string) => void;
+  requestGlobalAudioStop: () => void;
   connectWallet: () => Promise<string>;
   disconnectWallet: () => Promise<void>;
   markOnboardingSeen: () => void;
@@ -47,6 +49,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
   const [isStoreHydrated, setIsStoreHydrated] = useState(false);
   const [isSyncingNfts, setIsSyncingNfts] = useState(false);
+  const [globalAudioStopSignal, setGlobalAudioStopSignal] = useState(0);
 
   const nftClient = useMemo(() => {
     return new MetaplexHokusNftClient(createSolanaConnection('devnet'));
@@ -129,6 +132,7 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
   }, [walletProvider]);
 
   const disconnectWallet = useCallback(async (): Promise<void> => {
+    setGlobalAudioStopSignal(prev => prev + 1);
     await walletProvider.disconnect();
     setWalletAddress(null);
     setNfts([]);
@@ -138,6 +142,10 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
 
   const setActiveNft = useCallback((mintAddress: string): void => {
     setActiveMintAddress(mintAddress);
+  }, []);
+
+  const requestGlobalAudioStop = useCallback((): void => {
+    setGlobalAudioStopSignal(prev => prev + 1);
   }, []);
 
   const markOnboardingSeen = useCallback((): void => {
@@ -222,7 +230,9 @@ export const HokusNftStoreProvider: React.FC<React.PropsWithChildren> = ({childr
     isStoreHydrated,
     isSyncingNfts,
     mintPriceSol: FREE_MINT_PRICE_SOL,
+    globalAudioStopSignal,
     setActiveNft,
+    requestGlobalAudioStop,
     connectWallet,
     disconnectWallet,
     markOnboardingSeen,

@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, NativeModules, Pressable, StyleSheet, Text, View} from 'react-native';
 import {WebView} from 'react-native-webview';
 import type {SoundscapeScript} from '@/domain/models/SoundscapeScript';
 import {resolveSampleAssetUriCandidates} from '@/presentation/audio/soundAssetMap';
@@ -31,9 +31,12 @@ const ENGINE_HTML = `
 (function () {
   let ctx = null;
   let masterNode = null;
+  let outputNode = null;
   let activeNodes = [];
   let activeIntervals = [];
   let sampleBufferCache = {};
+  let activeSampleCounts = {};
+  let activeSyntheticCounts = {};
 
   function post(type, data) {
     if (!window.ReactNativeWebView) {
@@ -45,10 +48,21 @@ const ENGINE_HTML = `
   }
 
   function cleanup() {
+    if (ctx && outputNode) {
+      try {
+        outputNode.gain.cancelScheduledValues(ctx.currentTime);
+        outputNode.gain.setValueAtTime(0, ctx.currentTime);
+      } catch (_) {}
+    }
+
     activeIntervals.forEach(intervalId => {
+      try { clearTimeout(intervalId); } catch (_) {}
       try { clearInterval(intervalId); } catch (_) {}
     });
     activeIntervals = [];
+    activeSampleCounts = {};
+    activeSyntheticCounts = {};
+    post('playback_state', {samples: [], synthetic: []});
 
     activeNodes.forEach(node => {
       try { node.stop && node.stop(); } catch (_) {}
@@ -67,6 +81,9 @@ const ENGINE_HTML = `
     if (!ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       ctx = new AC();
+      outputNode = ctx.createGain();
+      outputNode.gain.value = 1;
+      outputNode.connect(ctx.destination);
     }
     if (ctx.state === 'suspended') {
       ctx.resume();
@@ -97,24 +114,25 @@ const ENGINE_HTML = `
 
   async function decodeFromCandidates(sampleName, candidates) {
     const audioCtx = ensureCtx();
-    let lastError = null;
+    const errors = [];
 
     for (let i = 0; i < candidates.length; i++) {
       const uri = candidates[i];
       try {
         const response = await fetch(uri, {cache: 'no-store'});
         if (!response.ok) {
-          throw new Error('HTTP ' + response.status + ' @ ' + uri);
+          errors.push(uri + ' -> HTTP ' + response.status);
+          continue;
         }
         const arrayBuffer = await response.arrayBuffer();
         const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
         return decoded;
       } catch (error) {
-        lastError = error;
+        errors.push(uri + ' -> ' + String(error));
       }
     }
 
-    throw lastError || new Error('No URI candidates for sample: ' + sampleName);
+    throw new Error('Sample "' + sampleName + '" failed: ' + (errors.length > 0 ? errors.join(' | ') : 'no URI candidates'));
   }
 
   async function preloadSamples(sampleUriMap) {
@@ -134,7 +152,8 @@ const ENGINE_HTML = `
       try {
         sampleBufferCache[sampleName] = await decodeFromCandidates(sampleName, candidates);
       } catch (error) {
-        failed.push(sampleName + ' (' + String(error) + ')');
+        const message = error instanceof Error ? error.message : String(error);
+        failed.push(message);
       }
     }
 
@@ -145,7 +164,43 @@ const ENGINE_HTML = `
     }
   }
 
-  function scheduleSampleEvent(audioCtx, destination, event, sampleBuffer, nowSec) {
+  function emitPlaybackState() {
+    const samples = Object.keys(activeSampleCounts).filter(name => activeSampleCounts[name] > 0).sort();
+    const synthetic = Object.keys(activeSyntheticCounts).filter(name => activeSyntheticCounts[name] > 0).sort();
+    post('playback_state', {samples: samples, synthetic: synthetic});
+  }
+
+  function markSampleStart(sampleName) {
+    activeSampleCounts[sampleName] = (activeSampleCounts[sampleName] || 0) + 1;
+    emitPlaybackState();
+  }
+
+  function markSampleEnd(sampleName) {
+    const next = (activeSampleCounts[sampleName] || 0) - 1;
+    if (next <= 0) {
+      delete activeSampleCounts[sampleName];
+    } else {
+      activeSampleCounts[sampleName] = next;
+    }
+    emitPlaybackState();
+  }
+
+  function markSyntheticStart(name) {
+    activeSyntheticCounts[name] = (activeSyntheticCounts[name] || 0) + 1;
+    emitPlaybackState();
+  }
+
+  function markSyntheticEnd(name) {
+    const next = (activeSyntheticCounts[name] || 0) - 1;
+    if (next <= 0) {
+      delete activeSyntheticCounts[name];
+    } else {
+      activeSyntheticCounts[name] = next;
+    }
+    emitPlaybackState();
+  }
+
+  function scheduleSampleEvent(audioCtx, destination, event, sampleName, sampleBuffer, nowSec) {
     const at = nowSec + event.atSecond;
     const panner = audioCtx.createStereoPanner();
     panner.pan.value = event.pan || 0;
@@ -164,6 +219,16 @@ const ENGINE_HTML = `
     source.start(at);
     source.stop(at + Math.max(0.06, event.durationSec || 0.2));
     activeNodes.push(source, panner, gain);
+
+    const startDelayMs = Math.max(0, (at - audioCtx.currentTime) * 1000);
+    const endDelayMs = startDelayMs + Math.max(60, (event.durationSec || 0.2) * 1000) + 20;
+    const onStartTimer = setTimeout(function () {
+      markSampleStart(sampleName);
+    }, startDelayMs);
+    const onEndTimer = setTimeout(function () {
+      markSampleEnd(sampleName);
+    }, endDelayMs);
+    activeIntervals.push(onStartTimer, onEndTimer);
   }
 
   function scheduleRainFallback(audioCtx, destination, loopLengthSec, gain, brightness) {
@@ -189,6 +254,7 @@ const ENGINE_HTML = `
 
     baseSrc.start();
     activeNodes.push(baseSrc, low, high, g);
+    markSyntheticStart('rain_fallback_noise');
   }
 
   function scheduleLoop(script) {
@@ -212,7 +278,7 @@ const ENGINE_HTML = `
         if (!sampleBuffer) {
           return;
         }
-        scheduleSampleEvent(audioCtx, masterNode, event, sampleBuffer, now);
+        scheduleSampleEvent(audioCtx, masterNode, event, sampleName, sampleBuffer, now);
       });
     });
   }
@@ -221,11 +287,17 @@ const ENGINE_HTML = `
     cleanup();
 
     const audioCtx = ensureCtx();
+    if (outputNode) {
+      try {
+        outputNode.gain.cancelScheduledValues(audioCtx.currentTime);
+        outputNode.gain.setValueAtTime(1, audioCtx.currentTime);
+      } catch (_) {}
+    }
     sampleBufferCache = {};
 
     const master = audioCtx.createGain();
     master.gain.value = 0.9;
-    master.connect(audioCtx.destination);
+    master.connect(outputNode || audioCtx.destination);
     masterNode = master;
     activeNodes.push(master);
 
@@ -253,6 +325,12 @@ const ENGINE_HTML = `
   }
 
   window.__hokusStop = function () {
+    if (ctx && outputNode) {
+      try {
+        outputNode.gain.cancelScheduledValues(ctx.currentTime);
+        outputNode.gain.setValueAtTime(0, ctx.currentTime);
+      } catch (_) {}
+    }
     cleanup();
     if (ctx) {
       try {
@@ -264,6 +342,7 @@ const ENGINE_HTML = `
         ctx.close();
       } catch (_) {}
       ctx = null;
+      outputNode = null;
     }
     sampleBufferCache = {};
     post('stopped');
@@ -284,10 +363,27 @@ export const SoundscapePlayer: React.FC<Props> = ({
 }) => {
   const webViewRef = useRef<WebView>(null);
   const pendingAutoPlayRef = useRef(false);
+  const stopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeSamples, setActiveSamples] = useState<string[]>([]);
+  const [activeSynthetic, setActiveSynthetic] = useState<string[]>([]);
   const [isReady, setIsReady] = useState(false);
   const [status, setStatus] = useState<string>('Idle');
   const [engineNonce, setEngineNonce] = useState(0);
+  const [engineMounted, setEngineMounted] = useState(true);
+  const engineBaseUrl = useMemo(() => {
+    const scriptUrl = NativeModules?.SourceCode?.scriptURL as string | undefined;
+    if (scriptUrl && scriptUrl.startsWith('http')) {
+      try {
+        return new URL(scriptUrl).origin;
+      } catch {
+        // Ignore malformed scriptURL and fallback to localhost.
+      }
+    }
+    return 'http://localhost:8081';
+  }, []);
 
   const payload = useMemo(() => {
     const sampleNames = Array.from(
@@ -311,6 +407,7 @@ export const SoundscapePlayer: React.FC<Props> = ({
   }, [script]);
 
   const playUnsafe = (): void => {
+    setIsLoading(true);
     setStatus('Starting...');
     const escaped = payload.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
     webViewRef.current?.injectJavaScript(`window.__hokusPlay(\`${escaped}\`); true;`);
@@ -318,6 +415,8 @@ export const SoundscapePlayer: React.FC<Props> = ({
 
   const play = (): void => {
     if (!isReady) {
+      setIsLoading(true);
+      setStatus('Loading audio engine...');
       pendingAutoPlayRef.current = true;
       return;
     }
@@ -325,12 +424,43 @@ export const SoundscapePlayer: React.FC<Props> = ({
   };
 
   const stop = (): void => {
+    if (stopFallbackTimerRef.current) {
+      clearTimeout(stopFallbackTimerRef.current);
+      stopFallbackTimerRef.current = null;
+    }
+    if (remountTimerRef.current) {
+      clearTimeout(remountTimerRef.current);
+      remountTimerRef.current = null;
+    }
+
+    setIsLoading(false);
     setIsPlaying(false);
+    setActiveSamples([]);
+    setActiveSynthetic([]);
     setStatus('Stopped');
     pendingAutoPlayRef.current = false;
     webViewRef.current?.injectJavaScript('window.__hokusStop(); true;');
     setIsReady(false);
-    setEngineNonce(prev => prev + 1);
+
+    // Hard-stop path: unmount the engine to guarantee AudioContext teardown.
+    setEngineMounted(false);
+    remountTimerRef.current = setTimeout(() => {
+      setEngineNonce(prev => prev + 1);
+      setEngineMounted(true);
+      remountTimerRef.current = null;
+    }, 16);
+
+    // Fallback reset in case the injected stop script does not execute.
+    stopFallbackTimerRef.current = setTimeout(() => {
+      setIsReady(false);
+      setEngineMounted(false);
+      remountTimerRef.current = setTimeout(() => {
+        setEngineNonce(prev => prev + 1);
+        setEngineMounted(true);
+        remountTimerRef.current = null;
+      }, 16);
+      stopFallbackTimerRef.current = null;
+    }, 80);
   };
 
   useEffect(() => {
@@ -351,6 +481,19 @@ export const SoundscapePlayer: React.FC<Props> = ({
     onPlaybackStateChange?.(isPlaying);
   }, [isPlaying, onPlaybackStateChange]);
 
+  useEffect(() => {
+    return () => {
+      if (stopFallbackTimerRef.current) {
+        clearTimeout(stopFallbackTimerRef.current);
+        stopFallbackTimerRef.current = null;
+      }
+      if (remountTimerRef.current) {
+        clearTimeout(remountTimerRef.current);
+        remountTimerRef.current = null;
+      }
+    };
+  }, []);
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{title}</Text>
@@ -359,51 +502,79 @@ export const SoundscapePlayer: React.FC<Props> = ({
 
       {!hideControls ? (
         <View style={styles.row}>
-          <Pressable style={styles.playButton} onPressIn={play}>
-            <Text style={styles.buttonText}>Play</Text>
+          <Pressable
+            style={[styles.playButton, (isLoading || isPlaying) && styles.disabledButton]}
+            onPress={play}
+            disabled={isLoading || isPlaying}>
+            <Text style={styles.buttonText}>{isLoading ? 'Loading...' : 'Play'}</Text>
           </Pressable>
-          <Pressable style={styles.stopButton} onPressIn={stop}>
+          <Pressable style={styles.stopButton} onPress={stop}>
             <Text style={styles.buttonText}>Stop</Text>
           </Pressable>
         </View>
       ) : null}
 
-      <WebView
-        key={`sound-engine-${engineNonce}`}
-        ref={webViewRef}
-        originWhitelist={['*']}
-        source={{html: ENGINE_HTML}}
-        style={styles.webview}
-        javaScriptEnabled
-        onLoadEnd={() => {
-          setIsReady(true);
-          if (pendingAutoPlayRef.current) {
-            pendingAutoPlayRef.current = false;
-            playUnsafe();
-          }
-        }}
-        onMessage={event => {
-          try {
-            const data = JSON.parse(event.nativeEvent.data);
-            if (data.type === 'started') {
-              setIsPlaying(true);
-              setStatus('Playing');
-            } else if (data.type === 'stopped') {
-              setIsPlaying(false);
-              setStatus('Stopped');
-            } else if (data.type === 'warning') {
-              setStatus(`Warning: ${data.message}`);
-            } else if (data.type === 'error') {
-              setIsPlaying(false);
-              setStatus(`Error: ${data.message}`);
+      {engineMounted ? (
+        <WebView
+          key={`sound-engine-${engineNonce}`}
+          ref={webViewRef}
+          originWhitelist={['*']}
+          source={{html: ENGINE_HTML, baseUrl: engineBaseUrl}}
+          style={styles.webview}
+          javaScriptEnabled
+          onLoadEnd={() => {
+            setIsReady(true);
+            if (pendingAutoPlayRef.current) {
+              pendingAutoPlayRef.current = false;
+              playUnsafe();
             }
-          } catch {
-            setIsPlaying(false);
-            setStatus('Player message parse error');
-          }
-        }}
-      />
+          }}
+          onMessage={event => {
+            try {
+              const data = JSON.parse(event.nativeEvent.data);
+              if (data.type === 'started') {
+                setIsLoading(false);
+                setIsPlaying(true);
+                setStatus('Playing');
+              } else if (data.type === 'stopped') {
+                if (stopFallbackTimerRef.current) {
+                  clearTimeout(stopFallbackTimerRef.current);
+                  stopFallbackTimerRef.current = null;
+                }
+                setIsLoading(false);
+                setIsPlaying(false);
+                setActiveSamples([]);
+                setActiveSynthetic([]);
+                setStatus('Stopped');
+              } else if (data.type === 'playback_state') {
+                setActiveSamples(Array.isArray(data.samples) ? data.samples : []);
+                setActiveSynthetic(Array.isArray(data.synthetic) ? data.synthetic : []);
+              } else if (data.type === 'warning') {
+                setStatus(`Warning: ${data.message}`);
+              } else if (data.type === 'error') {
+                setIsLoading(false);
+                setIsPlaying(false);
+                setActiveSamples([]);
+                setActiveSynthetic([]);
+                setStatus(`Error: ${data.message}`);
+              }
+            } catch {
+              setIsLoading(false);
+              setIsPlaying(false);
+              setActiveSamples([]);
+              setActiveSynthetic([]);
+              setStatus('Player message parse error');
+            }
+          }}
+        />
+      ) : null}
 
+      {isLoading ? (
+        <View style={styles.loadingRow}>
+          <ActivityIndicator size="small" color="#0A246A" />
+          <Text style={styles.loadingText}>Loading playback...</Text>
+        </View>
+      ) : null}
       {isPlaying ? <Text style={styles.nowPlaying}>Now playing</Text> : null}
     </View>
   );
@@ -450,12 +621,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 11
   },
+  disabledButton: {
+    opacity: 0.6
+  },
   webview: {
     width: 1,
     height: 1,
     opacity: 0
   },
   nowPlaying: {
+    color: '#0A246A',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  loadingText: {
     color: '#0A246A',
     fontSize: 11,
     fontWeight: '700'
