@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {WebView} from 'react-native-webview';
 import type {SoundscapeScript} from '@/domain/models/SoundscapeScript';
+import {resolveSampleAssetUriCandidates} from '@/presentation/audio/soundAssetMap';
 import {colors} from '@/theme/colors';
 
 type Props = {
@@ -11,6 +12,11 @@ type Props = {
   stopSignal?: number;
   onPlaybackStateChange?: (isPlaying: boolean) => void;
   hideControls?: boolean;
+};
+
+type EnginePayload = {
+  script: SoundscapeScript;
+  sampleUriMap: Record<string, string[]>;
 };
 
 const ENGINE_HTML = `
@@ -27,12 +33,23 @@ const ENGINE_HTML = `
   let masterNode = null;
   let activeNodes = [];
   let activeIntervals = [];
+  let sampleBufferCache = {};
+
+  function post(type, data) {
+    if (!window.ReactNativeWebView) {
+      return;
+    }
+    try {
+      window.ReactNativeWebView.postMessage(JSON.stringify(Object.assign({type: type}, data || {})));
+    } catch (_) {}
+  }
 
   function cleanup() {
     activeIntervals.forEach(intervalId => {
       try { clearInterval(intervalId); } catch (_) {}
     });
     activeIntervals = [];
+
     activeNodes.forEach(node => {
       try { node.stop && node.stop(); } catch (_) {}
       try { node.disconnect && node.disconnect(); } catch (_) {}
@@ -57,9 +74,13 @@ const ENGINE_HTML = `
     return ctx;
   }
 
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
   function createNoiseBuffer(audioCtx, seconds, brightness) {
     const sampleRate = audioCtx.sampleRate;
-    const length = Math.floor(seconds * sampleRate);
+    const length = Math.max(1, Math.floor(seconds * sampleRate));
     const buffer = audioCtx.createBuffer(1, length, sampleRate);
     const data = buffer.getChannelData(0);
 
@@ -74,256 +95,160 @@ const ENGINE_HTML = `
     return buffer;
   }
 
-  function scheduleRain(audioCtx, destination, loopLengthSec, gain, brightness) {
+  async function decodeFromCandidates(sampleName, candidates) {
+    const audioCtx = ensureCtx();
+    let lastError = null;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const uri = candidates[i];
+      try {
+        const response = await fetch(uri, {cache: 'no-store'});
+        if (!response.ok) {
+          throw new Error('HTTP ' + response.status + ' @ ' + uri);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+        return decoded;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new Error('No URI candidates for sample: ' + sampleName);
+  }
+
+  async function preloadSamples(sampleUriMap) {
+    const entries = Object.entries(sampleUriMap || {});
+    const failed = [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const pair = entries[i];
+      const sampleName = pair[0];
+      const candidates = pair[1];
+
+      if (!Array.isArray(candidates) || candidates.length === 0) {
+        failed.push(sampleName + ' (missing URI)');
+        continue;
+      }
+
+      try {
+        sampleBufferCache[sampleName] = await decodeFromCandidates(sampleName, candidates);
+      } catch (error) {
+        failed.push(sampleName + ' (' + String(error) + ')');
+      }
+    }
+
+    if (failed.length > 0) {
+      post('warning', {
+        message: 'Sample preload failed for: ' + failed.slice(0, 3).join(' | ') + (failed.length > 3 ? ' ...' : '')
+      });
+    }
+  }
+
+  function scheduleSampleEvent(audioCtx, destination, event, sampleBuffer, nowSec) {
+    const at = nowSec + event.atSecond;
+    const panner = audioCtx.createStereoPanner();
+    panner.pan.value = event.pan || 0;
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(clamp(event.gain || 0.2, 0.03, 1), at);
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = sampleBuffer;
+    source.playbackRate.value = clamp((sampleBuffer.duration || 0.2) / Math.max(0.07, event.durationSec || 0.2), 0.5, 2.4);
+
+    source.connect(panner);
+    panner.connect(gain);
+    gain.connect(destination);
+
+    source.start(at);
+    source.stop(at + Math.max(0.06, event.durationSec || 0.2));
+    activeNodes.push(source, panner, gain);
+  }
+
+  function scheduleRainFallback(audioCtx, destination, loopLengthSec, gain, brightness) {
     const baseSrc = audioCtx.createBufferSource();
     baseSrc.buffer = createNoiseBuffer(audioCtx, loopLengthSec, brightness * 0.7 + 0.2);
     baseSrc.loop = true;
 
-    const splashSrc = audioCtx.createBufferSource();
-    splashSrc.buffer = createNoiseBuffer(audioCtx, loopLengthSec, 1.0);
-    splashSrc.loop = true;
+    const low = audioCtx.createBiquadFilter();
+    low.type = 'lowpass';
+    low.frequency.value = 1200 + brightness * 1100;
 
-    const baseLow = audioCtx.createBiquadFilter();
-    baseLow.type = 'lowpass';
-    baseLow.frequency.value = 1200 + brightness * 1200;
+    const high = audioCtx.createBiquadFilter();
+    high.type = 'highpass';
+    high.frequency.value = 130;
 
-    const baseHigh = audioCtx.createBiquadFilter();
-    baseHigh.type = 'highpass';
-    baseHigh.frequency.value = 140;
+    const g = audioCtx.createGain();
+    g.gain.value = gain * 0.4;
 
-    const splashHigh = audioCtx.createBiquadFilter();
-    splashHigh.type = 'highpass';
-    splashHigh.frequency.value = 2200 + brightness * 1500;
-
-    const splashLow = audioCtx.createBiquadFilter();
-    splashLow.type = 'lowpass';
-    splashLow.frequency.value = 7200;
-
-    const baseGain = audioCtx.createGain();
-    baseGain.gain.value = gain * 0.85;
-
-    const splashGain = audioCtx.createGain();
-    splashGain.gain.value = gain * (0.16 + brightness * 0.16);
-
-    // Slow volume drift makes rain less static and more natural.
-    const rainLfo = audioCtx.createOscillator();
-    rainLfo.type = 'sine';
-    rainLfo.frequency.value = 0.035 + brightness * 0.055;
-    const rainLfoDepth = audioCtx.createGain();
-    rainLfoDepth.gain.value = gain * 0.06;
-
-    const rainMaster = audioCtx.createGain();
-    rainMaster.gain.value = 1;
-
-    baseSrc.connect(baseLow);
-    baseLow.connect(baseHigh);
-    baseHigh.connect(baseGain);
-    baseGain.connect(rainMaster);
-
-    splashSrc.connect(splashHigh);
-    splashHigh.connect(splashLow);
-    splashLow.connect(splashGain);
-    splashGain.connect(rainMaster);
-
-    rainLfo.connect(rainLfoDepth);
-    rainLfoDepth.connect(rainMaster.gain);
-
-    rainMaster.connect(destination);
+    baseSrc.connect(low);
+    low.connect(high);
+    high.connect(g);
+    g.connect(destination);
 
     baseSrc.start();
-    splashSrc.start();
-    rainLfo.start();
-    activeNodes.push(
-      baseSrc,
-      splashSrc,
-      baseLow,
-      baseHigh,
-      splashHigh,
-      splashLow,
-      baseGain,
-      splashGain,
-      rainLfo,
-      rainLfoDepth,
-      rainMaster
-    );
+    activeNodes.push(baseSrc, low, high, g);
   }
 
-  function scheduleThunder(audioCtx, destination, events, power) {
-    const now = audioCtx.currentTime;
-    events.forEach(event => {
-      const at = now + event.atSecond;
-      const panner = audioCtx.createStereoPanner();
-      panner.pan.value = event.pan;
-
-      // Bright crack transient.
-      const crackNoise = audioCtx.createBufferSource();
-      crackNoise.buffer = createNoiseBuffer(audioCtx, 0.6, 0.25);
-      const crackBand = audioCtx.createBiquadFilter();
-      crackBand.type = 'bandpass';
-      crackBand.frequency.value = 1100 + power * 1700;
-      crackBand.Q.value = 0.9;
-      const crackGain = audioCtx.createGain();
-      crackGain.gain.setValueAtTime(0.0001, at);
-      crackGain.gain.exponentialRampToValueAtTime(event.gain * (0.5 + power * 0.75), at + 0.02);
-      crackGain.gain.exponentialRampToValueAtTime(0.0001, at + 0.32);
-
-      // Low rumble tail.
-      const rumbleNoise = audioCtx.createBufferSource();
-      rumbleNoise.buffer = createNoiseBuffer(audioCtx, Math.max(2.4, event.durationSec + 1.2), 0.08);
-      const rumbleLow = audioCtx.createBiquadFilter();
-      rumbleLow.type = 'lowpass';
-      rumbleLow.frequency.value = 170 + power * 240;
-      const rumbleHigh = audioCtx.createBiquadFilter();
-      rumbleHigh.type = 'highpass';
-      rumbleHigh.frequency.value = 28;
-      const rumbleGain = audioCtx.createGain();
-      rumbleGain.gain.setValueAtTime(0.0001, at + 0.04);
-      rumbleGain.gain.exponentialRampToValueAtTime(event.gain * (0.65 + power * 0.8), at + 0.28);
-      rumbleGain.gain.exponentialRampToValueAtTime(0.0001, at + Math.max(2.2, event.durationSec + 0.9));
-
-      crackNoise.connect(crackBand);
-      crackBand.connect(panner);
-      panner.connect(crackGain);
-      crackGain.connect(destination);
-
-      rumbleNoise.connect(rumbleLow);
-      rumbleLow.connect(rumbleHigh);
-      rumbleHigh.connect(panner);
-      panner.connect(rumbleGain);
-      rumbleGain.connect(destination);
-
-      crackNoise.start(at);
-      crackNoise.stop(at + 0.55);
-      rumbleNoise.start(at + 0.03);
-      rumbleNoise.stop(at + Math.max(2.6, event.durationSec + 1.3));
-      activeNodes.push(
-        crackNoise,
-        crackBand,
-        crackGain,
-        rumbleNoise,
-        rumbleLow,
-        rumbleHigh,
-        rumbleGain,
-        panner
-      );
-    });
-  }
-
-  function scheduleForest(audioCtx, destination, events, density) {
-    const now = audioCtx.currentTime;
-    events.forEach(event => {
-      const osc = audioCtx.createOscillator();
-      osc.type = 'triangle';
-      osc.frequency.value = 1000 + Math.random() * 1600 + density * 300;
-
-      const panner = audioCtx.createStereoPanner();
-      panner.pan.value = event.pan;
-
-      const g = audioCtx.createGain();
-      const at = now + event.atSecond;
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.linearRampToValueAtTime(event.gain * (0.4 + density * 0.5), at + 0.08);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + event.durationSec);
-
-      osc.connect(panner);
-      panner.connect(g);
-      g.connect(destination);
-
-      osc.start(at);
-      osc.stop(at + event.durationSec + 0.02);
-      activeNodes.push(osc, panner, g);
-    });
-  }
-
-  function scheduleWind(audioCtx, destination, events, depth) {
-    const now = audioCtx.currentTime;
-    events.forEach(event => {
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = createNoiseBuffer(audioCtx, Math.max(1.5, event.durationSec), 0.5);
-
-      const low = audioCtx.createBiquadFilter();
-      low.type = 'lowpass';
-      low.frequency.value = 300 + depth * 500;
-
-      const panner = audioCtx.createStereoPanner();
-      panner.pan.value = event.pan * 0.6;
-
-      const g = audioCtx.createGain();
-      const at = now + event.atSecond;
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.linearRampToValueAtTime(event.gain * (0.35 + depth * 0.45), at + 0.4);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + event.durationSec);
-
-      noise.connect(low);
-      low.connect(panner);
-      panner.connect(g);
-      g.connect(destination);
-
-      noise.start(at);
-      noise.stop(at + event.durationSec + 0.1);
-      activeNodes.push(noise, low, panner, g);
-    });
-  }
-
-  function play(script) {
-    cleanup();
+  function scheduleLoop(script) {
     const audioCtx = ensureCtx();
+    const now = audioCtx.currentTime;
+
+    script.layers.forEach(layer => {
+      const layerHasSample = layer.events.some(event => event.sample && sampleBufferCache[event.sample]);
+
+      if (layer.type === 'rain' && !layerHasSample) {
+        const normalizedTexture = ((script.params && script.params.rainTexture) || 0) / 100;
+        scheduleRainFallback(audioCtx, masterNode, script.loopLengthSec, layer.gain, normalizedTexture);
+      }
+
+      layer.events.forEach(event => {
+        const sampleName = event.sample;
+        if (!sampleName) {
+          return;
+        }
+        const sampleBuffer = sampleBufferCache[sampleName];
+        if (!sampleBuffer) {
+          return;
+        }
+        scheduleSampleEvent(audioCtx, masterNode, event, sampleBuffer, now);
+      });
+    });
+  }
+
+  async function play(payloadObject) {
+    cleanup();
+
+    const audioCtx = ensureCtx();
+    sampleBufferCache = {};
 
     const master = audioCtx.createGain();
-    master.gain.value = 0.85;
+    master.gain.value = 0.9;
     master.connect(audioCtx.destination);
     masterNode = master;
     activeNodes.push(master);
 
-    const params = script.params || {};
-    const normalized = {
-      rainTexture: (params.rainTexture || 0) / 100,
-      thunderPower: (params.thunderPower || 0) / 100,
-      forestDensity: (params.forestDensity || 0) / 100,
-      windDepth: (params.windDepth || 0) / 100
-    };
+    await preloadSamples(payloadObject.sampleUriMap || {});
 
-    script.layers.forEach(layer => {
-      if (layer.type === 'rain') {
-        scheduleRain(audioCtx, master, script.loopLengthSec, layer.gain, normalized.rainTexture);
-      }
-    });
-
-    const scheduleFxLoop = function () {
-      script.layers.forEach(layer => {
-        if (layer.type === 'thunder') {
-          scheduleThunder(audioCtx, master, layer.events, normalized.thunderPower);
-        }
-        if (layer.type === 'forest') {
-          scheduleForest(audioCtx, master, layer.events, normalized.forestDensity);
-        }
-        if (layer.type === 'wind') {
-          scheduleWind(audioCtx, master, layer.events, normalized.windDepth);
-        }
-      });
-    };
-
-    scheduleFxLoop();
+    scheduleLoop(payloadObject.script);
     const loopIntervalId = setInterval(function () {
-      if (!ctx || ctx.state === 'closed') {
+      if (!ctx || ctx.state === 'closed' || !masterNode) {
         return;
       }
-      scheduleFxLoop();
-    }, script.loopLengthSec * 1000);
+      scheduleLoop(payloadObject.script);
+    }, payloadObject.script.loopLengthSec * 1000);
     activeIntervals.push(loopIntervalId);
+
+    post('started');
   }
 
-  window.__hokusPlay = function (payload) {
+  window.__hokusPlay = async function (payload) {
     try {
-      const script = JSON.parse(payload);
-      play(script);
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({type: 'started'}));
-      }
+      const parsed = JSON.parse(payload);
+      await play(parsed);
     } catch (e) {
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({type: 'error', message: String(e)}));
-      }
+      post('error', {message: String(e)});
     }
   }
 
@@ -340,9 +265,8 @@ const ENGINE_HTML = `
       } catch (_) {}
       ctx = null;
     }
-    if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(JSON.stringify({type: 'stopped'}));
-    }
+    sampleBufferCache = {};
+    post('stopped');
   }
 })();
 </script>
@@ -366,7 +290,24 @@ export const SoundscapePlayer: React.FC<Props> = ({
   const [engineNonce, setEngineNonce] = useState(0);
 
   const payload = useMemo(() => {
-    return JSON.stringify(script);
+    const sampleNames = Array.from(
+      new Set(script.layers.flatMap(layer => layer.events.map(event => event.sample).filter(Boolean) as string[]))
+    );
+
+    const sampleUriMap = sampleNames.reduce<Record<string, string[]>>((acc, sampleName) => {
+      const candidates = resolveSampleAssetUriCandidates(sampleName);
+      if (candidates.length > 0) {
+        acc[sampleName] = candidates;
+      }
+      return acc;
+    }, {});
+
+    const data: EnginePayload = {
+      script,
+      sampleUriMap
+    };
+
+    return JSON.stringify(data);
   }, [script]);
 
   const playUnsafe = (): void => {
@@ -384,7 +325,6 @@ export const SoundscapePlayer: React.FC<Props> = ({
   };
 
   const stop = (): void => {
-    // Optimistically update UI and force-reset WebView engine to guarantee stop.
     setIsPlaying(false);
     setStatus('Stopped');
     pendingAutoPlayRef.current = false;
@@ -405,8 +345,6 @@ export const SoundscapePlayer: React.FC<Props> = ({
       return;
     }
     stop();
-    setIsPlaying(false);
-    setStatus('Stopped');
   }, [stopSignal]);
 
   useEffect(() => {
@@ -453,9 +391,8 @@ export const SoundscapePlayer: React.FC<Props> = ({
             } else if (data.type === 'stopped') {
               setIsPlaying(false);
               setStatus('Stopped');
-            } else if (data.type === 'finished') {
-              setIsPlaying(false);
-              setStatus('Finished');
+            } else if (data.type === 'warning') {
+              setStatus(`Warning: ${data.message}`);
             } else if (data.type === 'error') {
               setIsPlaying(false);
               setStatus(`Error: ${data.message}`);
